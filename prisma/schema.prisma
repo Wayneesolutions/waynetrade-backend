@@ -1,0 +1,150 @@
+// WayneTrade — Core Data Model (Phase 1 MVP)
+// Reference: WayneTrade_Developer_Guide.docx, Section 4
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Group {
+  id          String   @id @default(uuid())
+  name        String
+  adminUserId String   @map("admin_user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  members      Member[]
+  strategies   Strategy[]
+  killSwitches KillSwitchEvent[] @relation("GroupKillSwitch")
+
+  @@map("groups")
+}
+
+model Member {
+  id               String   @id @default(uuid())
+  groupId          String   @map("group_id")
+  userId           String   @map("user_id")
+  brokerType       BrokerType @map("broker_type")
+  // Tokenized reference only — never store raw broker credentials here.
+  // Actual API keys/tokens live in a secrets manager (e.g. Railway/Vault),
+  // this column just points to that secret.
+  brokerAccountRef String   @map("broker_account_ref")
+  riskProfileId    String?  @map("risk_profile_id")
+  status           MemberStatus @default(ACTIVE)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  group           Group @relation(fields: [groupId], references: [id])
+  riskDecisions   RiskDecision[]
+  orders          Order[]
+  killSwitchEvents KillSwitchEvent[] @relation("MemberKillSwitch")
+
+  @@map("members")
+}
+
+enum BrokerType {
+  METATRADER
+  KITE_CONNECT
+}
+
+enum MemberStatus {
+  ACTIVE
+  PAUSED
+  REMOVED
+}
+
+model Strategy {
+  id               String   @id @default(uuid())
+  groupId          String   @map("group_id")
+  name             String
+  sourceType       SourceType @map("source_type")
+  // Store only a hash of the webhook secret — never the plaintext secret.
+  webhookSecretHash String  @map("webhook_secret_hash")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  group   Group    @relation(fields: [groupId], references: [id])
+  signals Signal[]
+
+  @@map("strategies")
+}
+
+enum SourceType {
+  PINE_SCRIPT
+  CUSTOM
+}
+
+model Signal {
+  id          String   @id @default(uuid())
+  strategyId  String   @map("strategy_id")
+  rawPayload  Json     @map("raw_payload")
+  receivedAt  DateTime @default(now()) @map("received_at")
+  validated   Boolean  @default(false)
+
+  strategy      Strategy       @relation(fields: [strategyId], references: [id])
+  riskDecisions RiskDecision[]
+
+  @@map("signals")
+}
+
+model RiskDecision {
+  id           String   @id @default(uuid())
+  signalId     String   @map("signal_id")
+  memberId     String   @map("member_id")
+  action       RiskAction
+  reason       String
+  positionSize Decimal? @map("position_size") @db.Decimal(18, 4)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  signal Signal @relation(fields: [signalId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
+  order  Order?
+
+  @@map("risk_decisions")
+}
+
+enum RiskAction {
+  APPROVE
+  REJECT
+  RESIZE
+}
+
+model Order {
+  id             String   @id @default(uuid())
+  riskDecisionId String   @unique @map("risk_decision_id")
+  memberId       String   @map("member_id")
+  brokerOrderRef String?  @map("broker_order_ref")
+  status         OrderStatus @default(PENDING)
+  algoId         String?  @map("algo_id") // equities-only, SEBI Algo-ID
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  riskDecision RiskDecision @relation(fields: [riskDecisionId], references: [id])
+  member       Member       @relation(fields: [memberId], references: [id])
+
+  @@map("orders")
+}
+
+enum OrderStatus {
+  PENDING
+  SENT
+  FILLED
+  REJECTED
+  CANCELLED
+  ERROR
+}
+
+model KillSwitchEvent {
+  id          String   @id @default(uuid())
+  memberId    String?  @map("member_id")
+  groupId     String?  @map("group_id")
+  triggeredBy String   @map("triggered_by")
+  triggeredAt DateTime @default(now()) @map("triggered_at")
+  reason      String
+
+  member Member? @relation("MemberKillSwitch", fields: [memberId], references: [id])
+  group  Group?  @relation("GroupKillSwitch", fields: [groupId], references: [id])
+
+  @@map("kill_switch_events")
+}
