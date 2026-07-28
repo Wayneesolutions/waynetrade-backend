@@ -143,6 +143,119 @@ router.post("/group/:groupId/strategy", async (req, res, next) => {
   }
 });
 
+/**
+ * Edit a member's basic fields. Status changes here are for corrections
+ * (e.g. undoing an accidental removal) — pausing/resuming for trading
+ * reasons must go through /kill-switch so it's audit-logged.
+ */
+router.put("/member/:memberId", async (req, res, next) => {
+  try {
+    const { memberId } = req.params;
+    const { userId, brokerType, brokerAccountRef } = req.body;
+
+    if (brokerType && !["METATRADER", "KITE_CONNECT"].includes(brokerType)) {
+      return res.status(400).json({ error: "brokerType must be METATRADER or KITE_CONNECT" });
+    }
+
+    const existing = await prisma.member.findUnique({ where: { id: memberId } });
+    if (!existing) return res.status(404).json({ error: "Member not found" });
+
+    const member = await prisma.member.update({
+      where: { id: memberId },
+      data: {
+        ...(userId !== undefined ? { userId } : {}),
+        ...(brokerType !== undefined ? { brokerType } : {}),
+        ...(brokerAccountRef !== undefined ? { brokerAccountRef } : {}),
+      },
+      include: { riskProfile: true },
+    });
+
+    res.status(200).json(member);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Remove a member — soft delete (status REMOVED), never a row delete:
+ * their signals/decisions/orders must stay in the audit trail. A removed
+ * member gets no further signals (webhook skips REMOVED).
+ */
+router.delete("/member/:memberId", async (req, res, next) => {
+  try {
+    const { memberId } = req.params;
+    const { reason } = req.body || {};
+    if (!reason) {
+      return res.status(400).json({ error: "reason is required — removals are audit-logged" });
+    }
+
+    const existing = await prisma.member.findUnique({ where: { id: memberId } });
+    if (!existing) return res.status(404).json({ error: "Member not found" });
+
+    const [member] = await prisma.$transaction([
+      prisma.member.update({ where: { id: memberId }, data: { status: "REMOVED" } }),
+      prisma.killSwitchEvent.create({
+        data: { memberId, triggeredBy: "onboarding", reason: `REMOVED: ${reason}` },
+      }),
+    ]);
+
+    res.status(200).json(member);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Rename a strategy (name/sourceType only — secrets are never editable). */
+router.put("/strategy/:strategyId", async (req, res, next) => {
+  try {
+    const { strategyId } = req.params;
+    const { name, sourceType } = req.body;
+
+    if (sourceType && !["PINE_SCRIPT", "CUSTOM"].includes(sourceType)) {
+      return res.status(400).json({ error: "sourceType must be PINE_SCRIPT or CUSTOM" });
+    }
+
+    const existing = await prisma.strategy.findUnique({ where: { id: strategyId } });
+    if (!existing) return res.status(404).json({ error: "Strategy not found" });
+
+    const strategy = await prisma.strategy.update({
+      where: { id: strategyId },
+      data: {
+        ...(name !== undefined ? { name } : {}),
+        ...(sourceType !== undefined ? { sourceType } : {}),
+      },
+    });
+
+    res.status(200).json(strategy);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Archive a strategy — soft delete. Its webhook immediately stops accepting
+ * signals (404), but every signal/decision it ever produced stays in the
+ * audit trail. There is no un-archive on purpose: stale strategies should
+ * be recreated (new secret), not quietly revived.
+ */
+router.delete("/strategy/:strategyId", async (req, res, next) => {
+  try {
+    const { strategyId } = req.params;
+
+    const existing = await prisma.strategy.findUnique({ where: { id: strategyId } });
+    if (!existing) return res.status(404).json({ error: "Strategy not found" });
+
+    const strategy = await prisma.strategy.update({
+      where: { id: strategyId },
+      data: { archived: true },
+    });
+
+    res.status(200).json(strategy);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get("/groups", async (req, res, next) => {
   try {
     const groups = await prisma.group.findMany({

@@ -1,101 +1,103 @@
-# WayneTrade — Backend (Phase 1 MVP)
+# WayneTrade — Backend
 
 Group algo-trading command center. Backend for signal ingestion, risk engine,
-kill-switch, and audit logging, per `WayneTrade_Developer_Guide.docx`.
+kill-switch, audit logging, live P&L, notifications, and per-user auth, per
+`WayneTrade_Developer_Guide.docx`.
 
-Scope of this scaffold: **Phase 1, gaps closed as of July 28, 2026** —
-Forex/Crypto via MetaTrader, per-member fixed position sizing, hard
-stop-loss, manual kill-switch, admin API-key auth. Phases 2–4 (dashboard
-frontend UI, backtesting, Kite Connect/equities, billing, multi-group scale)
-are still not built — see "What is NOT built" below.
+Scope: **Phase 1 complete + most of Phase 2, as of July 28, 2026** —
+Forex/Crypto via MetaTrader, per-member risk profiles, kill-switch, live
+account data, backtesting, Telegram notifications, per-user RBAC. The Kite
+Connect equities path (Phase 3) is scaffolded but hard-gated off. See
+"What is NOT done" below — it's shorter now, but the items on it matter more.
 
 ## What's actually built
 
-- Prisma schema for all 7 core tables plus a new `risk_profiles` table
-  (groups, members, strategies, signals, risk_decisions, orders,
-  kill_switch_events, risk_profiles).
-- Express webhook receiver with HMAC signature verification, secret is now
-  decrypted from an encrypted DB column (see "Fixed since last version" below).
-- Risk engine: kill-switch check → stop-loss check → **per-member** position
-  sizing (from `risk_profiles`, not hardcoded) → writes a `risk_decisions`
-  row for every signal/member pair, always.
+- Prisma schema: the guide's 7 core tables plus `risk_profiles`, `users`
+  (per-user auth), and `equity_snapshots` (P&L history).
+- Express webhook receiver with HMAC signature verification; secrets
+  AES-256-GCM encrypted at rest, decrypted only at verification time.
+- Risk engine: kill-switch check → hard stop-loss requirement → per-member
+  position sizing — every decision written to `risk_decisions`, always.
 - Kill-switch routes: pause/resume a member, pause a whole group. Every
-  trigger is logged to `kill_switch_events` — no silent pauses.
-- MetaApi execution bridge — request/response shape now matches MetaApi's
-  published REST docs (previously a guess). **Still untested against a real
-  MetaApi account** — see gaps below.
-- Dashboard read routes for group overview + per-member audit trail.
-- **New:** admin API-key auth (`X-Api-Key` header) on all kill-switch and
-  dashboard routes — these were fully open before.
-- **New:** `scripts/generate-strategy-secret.js` — generates a webhook
-  secret and its encrypted form to store against a new strategy row.
-- **New:** onboarding routes — create groups, add members with risk profiles,
-  and create strategies (auto-generates + encrypts the webhook secret,
-  returned once in plaintext for pasting into TradingView). Closes the
-  "no onboarding UI" gap on the backend side — see waynetrade-frontend for
-  the form that uses these.
+  trigger logged and notified — no silent kill-switches.
+- MetaApi execution bridge (order placement) **plus live reads**: account
+  information (balance/equity) and open positions. Still untested against
+  a real MetaApi account — see gaps.
+- **New: live P&L routes.** `/dashboard/member/:id/live` and
+  `/dashboard/group/:id/live` pull balance/equity/positions straight from
+  MetaApi; every successful poll stores an `equity_snapshots` row, which
+  feeds `/dashboard/member/:id/equity-history` (the dashboard's chart).
+- **New: per-user auth (RBAC).** `users` table, bcrypt password hashes,
+  JWT login (`/auth/login`, 12h tokens). Roles: ADMIN (everything) and
+  MEMBER (linked to one members row — may pause/resume only themselves,
+  see only their own group/audit/live data). The legacy shared
+  `ADMIN_API_KEY` still works and is treated as ADMIN, so nothing breaks.
+- **New: Telegram notifications** (guide's Notifications layer): signal
+  results, order errors, kill-switch events. Optional — unset env = no-op.
+  Telegram first because WhatsApp Business API needs Meta approval; the
+  service is one file and swappable.
+- **New: backtesting module** (`backtest/`): dependency-free Python
+  backtester that mirrors the live risk rules (fixed lots, hard stop-loss),
+  SMA-crossover example strategy, win rate / P&L / profit factor / max
+  drawdown. Run `python backtest/generate_sample_data.py` then
+  `python backtest/backtest.py backtest/sample_data/EURUSD_H1_sample.csv`.
+- **New: Kite Connect scaffold** (Phase 3 path): order placement against
+  Kite's documented v3 REST API with SEBI Algo-ID tagging (`tag` field),
+  wired into the webhook flow for KITE_CONNECT members — but hard-gated
+  behind `KITE_ENABLED=true` and refuses untagged orders. Read the header
+  comment in `src/services/kiteBridge.js` before even thinking about
+  enabling it.
+- Onboarding routes now cover the full lifecycle: create groups/members/
+  strategies, **edit members, remove members (soft delete, audit-logged),
+  rename strategies, archive strategies** (webhook stops accepting
+  signals; history kept).
 
-## Fixed since last version (previously listed as open gaps)
+## What is NOT done / honest gaps that remain
 
-- ~~MetaApi integration is unverified (guessed request shape)~~ → now built
-  against MetaApi's documented `POST /users/current/accounts/:id/trade`
-  endpoint and `MetatraderTrade` schema. Still not run against a live/demo
-  account — that's a different kind of gap (see below).
-- ~~Webhook secret storage was inconsistent (hash vs. plaintext mismatch)~~ →
-  `strategies.webhookSecretEncrypted` now stores an AES-256-GCM ciphertext,
-  decrypted at request time via `ENCRYPTION_KEY`. See
-  `src/services/encryption.js` and `scripts/generate-strategy-secret.js`.
-- ~~No per-member risk profile table~~ → `risk_profiles` table added,
-  `members.risk_profile_id` links to it, risk engine reads real
-  `fixedLots` per member instead of a hardcoded `0.01`. A member with no
-  risk profile assigned is correctly **rejected**, not silently defaulted.
-- ~~No auth/RBAC layer~~ → shared admin API key now required on
-  `/kill-switch/*` and `/dashboard/*`. **This is not full RBAC** — see the
-  honest limit below.
-
-## What is NOT built / honest gaps that remain
-
-- **Auth is a single shared admin key, not per-user RBAC.** Anyone with the
-  key can pause any member or any group, and see any dashboard. Real
-  per-person permissions (e.g. "member X can only pause themselves") need a
-  proper user/auth system — bigger scope, not done here.
-- **MetaApi bridge has never touched a real MetaApi account.** The request
-  shape is now correct per MetaApi's docs, but this repo has no MetaApi
-  account, no connected demo MT5 login, and has made zero real API calls.
-  Before this goes near even a demo account: (1) create a MetaApi.cloud
-  account, (2) provision a demo MT5 account through MetaApi and get its
-  `accountId`, (3) confirm which region your account's client API lives on
-  and set `METAAPI_BASE_URL` accordingly, (4) run one signal through
-  end-to-end and inspect the real response.
-- **No P&L / live position sync.** Dashboard reads only our own DB (orders,
-  decisions), not live equity/open-position data from MetaApi — that's a
-  separate polling or webhook integration.
-- **Dashboard frontend exists but has more to build.** See
-  `waynetrade-frontend` repo — group overview, kill-switch controls, audit
-  trail, and (as of this update) an onboarding form are built; live P&L and
-  charts are not.
-- **No backtesting module.** Phase 2 item, not started.
-- **Kite Connect / equities / Algo-ID tagging.** Phase 3, not started.
-  Confirm SEBI Algo-ID registration process with the broker directly.
-- **Legal/compliance review not done.** Get this reviewed before any real
-  money moves through this system.
+- **Nothing has touched a real broker API.** MetaApi order placement and
+  the new live reads are built against MetaApi's published docs but have
+  made zero real API calls (this repo has no MetaApi account). Before even
+  a demo run: create a MetaApi.cloud account, provision a demo MT5 account,
+  set `METAAPI_BASE_URL` to your region, run one signal end-to-end.
+- **Kite Connect path is scaffolding, not a product.** Daily manual access
+  token refresh, naive quantity mapping (no lot-size/instrument master),
+  no paired stop-loss order, and the SEBI Algo-ID registration process
+  must be confirmed with the broker — none of that is assumable from docs.
+  It stays gated off (`KITE_ENABLED=false`) until broker confirmation AND
+  legal review.
+- **Legal/compliance review not done** (guide Section 6). Required before
+  real money on any path, and before the equities path goes live at all.
+- **Equity history depends on dashboard use.** Snapshots are captured when
+  live data is polled; if nobody opens the dashboard for a week, that week
+  has no chart data. A scheduled polling worker is the next step if that
+  matters.
+- **Member accounts need an admin to create them** (`POST /auth/users`) —
+  no self-signup, by design for a friends-group tool, but it means
+  onboarding still has a manual step.
+- **Backtester models no slippage/spread/commissions.** It validates logic,
+  not profitability. Demo-account validation (Phase 1 goal) is still the
+  real test.
 
 ## Setup
 
 ```bash
 npm install
 cp .env.example .env
-# Fill in: DATABASE_URL, ENCRYPTION_KEY, ADMIN_API_KEY (see .env.example for
-# how to generate each), METAAPI_TOKEN once you have a MetaApi account.
-npx prisma migrate dev --name add_risk_profiles_and_encrypted_secrets
+# Fill in: DATABASE_URL, ENCRYPTION_KEY, ADMIN_API_KEY, JWT_SECRET
+# (see .env.example for how to generate each), METAAPI_TOKEN once you have
+# a MetaApi account, TELEGRAM_* if you want notifications.
+npx prisma migrate dev --name add_users_equity_snapshots_strategy_archived
 npm run dev
 ```
 
-To register a new strategy's webhook secret:
+First-time auth bootstrap (creates the first admin; only works while the
+users table is empty):
+
 ```bash
-npm run generate-secret
-# prints a plaintext secret (put in TradingView's alert config) and the
-# encrypted value (save into strategies.webhook_secret_encrypted)
+curl -X POST localhost:4000/auth/bootstrap-admin \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"min8chars"}'
+# → returns a token; log in later with POST /auth/login
 ```
 
 ## Routes
@@ -103,25 +105,40 @@ npm run generate-secret
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/health` | none | Liveness check |
-| POST | `/webhook/:strategyId` | HMAC signature (`X-Signature`) | TradingView/custom strategy webhook receiver |
-| POST | `/kill-switch/member/:memberId` | `X-Api-Key` | Pause a member |
-| POST | `/kill-switch/member/:memberId/resume` | `X-Api-Key` | Resume a member |
-| POST | `/kill-switch/group/:groupId` | `X-Api-Key` | Pause an entire group |
-| GET | `/dashboard/group/:groupId` | `X-Api-Key` | Group + members + recent orders |
-| GET | `/dashboard/member/:memberId/audit` | `X-Api-Key` | Full risk-decision/order audit trail for a member |
-| GET | `/onboarding/groups` | `X-Api-Key` | List all groups with members + strategies |
-| POST | `/onboarding/group` | `X-Api-Key` | Create a group |
-| POST | `/onboarding/group/:groupId/member` | `X-Api-Key` | Add a member to a group, optionally with a risk profile |
-| PUT | `/onboarding/member/:memberId/risk-profile` | `X-Api-Key` | Set/replace a member's risk profile |
-| POST | `/onboarding/group/:groupId/strategy` | `X-Api-Key` | Create a strategy — returns the plaintext webhook secret **once** |
+| POST | `/webhook/:strategyId` | HMAC (`X-Signature`) | Strategy webhook receiver |
+| POST | `/auth/bootstrap-admin` | none (first run only) | Create the first admin |
+| POST | `/auth/login` | email+password | Get a JWT (12h) |
+| POST | `/auth/users` | admin | Create a user, optionally linked to a member |
+| GET | `/auth/me` | any | Who am I / role / member link |
+| POST | `/kill-switch/member/:id` | self or admin | Pause a member |
+| POST | `/kill-switch/member/:id/resume` | self or admin | Resume a member |
+| POST | `/kill-switch/group/:id` | admin | Pause an entire group |
+| GET | `/dashboard/group/:id` | own group | Group + members + recent orders |
+| GET | `/dashboard/group/:id/live` | own group | Live balance/equity per member (MetaApi) |
+| GET | `/dashboard/member/:id/audit` | self or admin | Full decision/order audit trail |
+| GET | `/dashboard/member/:id/live` | self or admin | Live account info + open positions |
+| GET | `/dashboard/member/:id/equity-history` | self or admin | Equity snapshots for the chart |
+| GET | `/onboarding/groups` | admin | List groups with members + strategies |
+| POST | `/onboarding/group` | admin | Create a group |
+| POST | `/onboarding/group/:id/member` | admin | Add a member (+ risk profile) |
+| PUT | `/onboarding/member/:id` | admin | Edit a member's details |
+| DELETE | `/onboarding/member/:id` | admin | Remove a member (soft, audit-logged, reason required) |
+| PUT | `/onboarding/member/:id/risk-profile` | admin | Set/replace a risk profile |
+| POST | `/onboarding/group/:id/strategy` | admin | Create a strategy (secret shown once) |
+| PUT | `/onboarding/strategy/:id` | admin | Rename a strategy |
+| DELETE | `/onboarding/strategy/:id` | admin | Archive a strategy (webhook off, history kept) |
+
+"self or admin" = a MEMBER-role JWT linked to that members row, or any ADMIN
+(JWT or legacy `X-Api-Key`).
 
 ## Security notes
 
 - Broker credentials are never stored in this DB — `members.broker_account_ref`
   is a tokenized reference only (the MetaApi `accountId`, not a password).
 - Webhook secrets are encrypted at rest (AES-256-GCM), decrypted only at
-  signature-verification time.
-- Every risk decision and every kill-switch event is logged, no exceptions.
-- Kill-switch and dashboard routes require the admin API key — this is a
-  minimum bar, not a substitute for real per-user auth before this handles
-  real money.
+  signature-verification time; strategy archive kills the webhook instantly.
+- Every risk decision, kill-switch event, and member removal is logged.
+- Notifications never include keys, credentials, or secrets.
+- Login is rate-limited; passwords are bcrypt-hashed; JWTs expire in 12h.
+- The Kite path refuses to place any order without an Algo-ID tag, and the
+  whole path is disabled unless `KITE_ENABLED=true` is set deliberately.

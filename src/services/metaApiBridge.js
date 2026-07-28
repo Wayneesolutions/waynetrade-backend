@@ -89,4 +89,57 @@ async function placeOrder({ metaApiAccountId, symbol, side, volume, stopLoss, ta
   }
 }
 
-module.exports = { placeOrder };
+/**
+ * Shared GET helper for MetaApi read endpoints (same auth/error handling
+ * as placeOrder). Read calls are safe to expose to the dashboard.
+ */
+async function metaApiGet(metaApiAccountId, path) {
+  if (!METAAPI_TOKEN) {
+    throw new Error("METAAPI_TOKEN not configured — live account data unavailable");
+  }
+  if (!metaApiAccountId) {
+    throw new Error("Member has no metaApiAccountId (members.broker_account_ref) configured");
+  }
+  try {
+    const response = await axios.get(
+      `${METAAPI_BASE_URL}/users/current/accounts/${metaApiAccountId}${path}`,
+      {
+        headers: { "auth-token": METAAPI_TOKEN, Accept: "application/json" },
+        timeout: 15000,
+      }
+    );
+    return response.data;
+  } catch (err) {
+    if (err.response) {
+      const status = err.response.status;
+      const data = err.response.data;
+      throw new Error(
+        `MetaApi read failed (${status}): ${data?.message || JSON.stringify(data)}`
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Live account information — balance, equity, margin, currency.
+ * GET /users/current/accounts/:accountId/account-information
+ * Response per docs: { broker, currency, balance, equity, margin,
+ * freeMargin, leverage, ... }. Same untested-against-a-real-account caveat
+ * as placeOrder — verify field names on the first real call.
+ */
+function getAccountInformation(metaApiAccountId) {
+  return metaApiGet(metaApiAccountId, "/account-information");
+}
+
+/**
+ * Live open positions.
+ * GET /users/current/accounts/:accountId/positions
+ * Response per docs: array of { id, symbol, type (POSITION_TYPE_BUY/SELL),
+ * volume, openPrice, currentPrice, profit, stopLoss, takeProfit, ... }.
+ */
+function getPositions(metaApiAccountId) {
+  return metaApiGet(metaApiAccountId, "/positions");
+}
+
+module.exports = { placeOrder, getAccountInformation, getPositions };
