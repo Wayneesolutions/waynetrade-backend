@@ -29,6 +29,11 @@ are still not built — see "What is NOT built" below.
   dashboard routes — these were fully open before.
 - **New:** `scripts/generate-strategy-secret.js` — generates a webhook
   secret and its encrypted form to store against a new strategy row.
+- **New:** onboarding routes — create groups, add members with risk profiles,
+  and create strategies (auto-generates + encrypts the webhook secret,
+  returned once in plaintext for pasting into TradingView). Closes the
+  "no onboarding UI" gap on the backend side — see waynetrade-frontend for
+  the form that uses these.
 
 ## Fixed since last version (previously listed as open gaps)
 
@@ -65,8 +70,10 @@ are still not built — see "What is NOT built" below.
 - **No P&L / live position sync.** Dashboard reads only our own DB (orders,
   decisions), not live equity/open-position data from MetaApi — that's a
   separate polling or webhook integration.
-- **No frontend.** Dashboard UI is a separate deliverable — see
-  `waynetrade-frontend` repo (built alongside this update) for a first pass.
+- **Dashboard frontend exists but has more to build.** See
+  `waynetrade-frontend` repo — group overview, kill-switch controls, audit
+  trail, and (as of this update) an onboarding form are built; live P&L and
+  charts are not.
 - **No backtesting module.** Phase 2 item, not started.
 - **Kite Connect / equities / Algo-ID tagging.** Phase 3, not started.
   Confirm SEBI Algo-ID registration process with the broker directly.
@@ -102,6 +109,11 @@ npm run generate-secret
 | POST | `/kill-switch/group/:groupId` | `X-Api-Key` | Pause an entire group |
 | GET | `/dashboard/group/:groupId` | `X-Api-Key` | Group + members + recent orders |
 | GET | `/dashboard/member/:memberId/audit` | `X-Api-Key` | Full risk-decision/order audit trail for a member |
+| GET | `/onboarding/groups` | `X-Api-Key` | List all groups with members + strategies |
+| POST | `/onboarding/group` | `X-Api-Key` | Create a group |
+| POST | `/onboarding/group/:groupId/member` | `X-Api-Key` | Add a member to a group, optionally with a risk profile |
+| PUT | `/onboarding/member/:memberId/risk-profile` | `X-Api-Key` | Set/replace a member's risk profile |
+| POST | `/onboarding/group/:groupId/strategy` | `X-Api-Key` | Create a strategy — returns the plaintext webhook secret **once** |
 
 ## Security notes
 
