@@ -23,6 +23,30 @@ model Group {
   @@map("groups")
 }
 
+// Per-user accounts for real RBAC (replaces "everyone shares one admin key").
+// ADMIN: full control (kill-switch anyone, onboarding, all dashboards).
+// MEMBER: linked to one members row — can pause/resume only themselves and
+// view only their own group's dashboard / their own audit trail.
+// The shared ADMIN_API_KEY still works (treated as ADMIN) so existing
+// deployments and the dashboard's connect-by-key flow don't break.
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole @default(MEMBER)
+  memberId     String?  @unique @map("member_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  member Member? @relation(fields: [memberId], references: [id])
+
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  MEMBER
+}
+
 model Member {
   id               String   @id @default(uuid())
   groupId          String   @map("group_id")
@@ -41,8 +65,28 @@ model Member {
   riskDecisions   RiskDecision[]
   orders          Order[]
   killSwitchEvents KillSwitchEvent[] @relation("MemberKillSwitch")
+  user            User?
+  equitySnapshots EquitySnapshot[]
 
   @@map("members")
+}
+
+// Point-in-time balance/equity per member, captured whenever the live
+// dashboard route polls MetaApi. This is what makes a P&L-over-time chart
+// possible without a separate always-on polling worker: history accrues
+// while someone is watching the dashboard. Sparse by design.
+model EquitySnapshot {
+  id         String   @id @default(uuid())
+  memberId   String   @map("member_id")
+  balance    Decimal  @db.Decimal(18, 2)
+  equity     Decimal  @db.Decimal(18, 2)
+  currency   String
+  capturedAt DateTime @default(now()) @map("captured_at")
+
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@index([memberId, capturedAt])
+  @@map("equity_snapshots")
 }
 
 // Added to close a Phase 1 gap: lets each member run the same strategy at a
@@ -81,6 +125,9 @@ model Strategy {
   // signature verification needs the actual secret back, not a hash of it.
   // Decrypted at request time using ENCRYPTION_KEY (see src/services/encryption.js).
   webhookSecretEncrypted String  @map("webhook_secret_encrypted")
+  // Soft-delete: archived strategies stop accepting webhooks and disappear
+  // from the dashboard, but their signals/decisions stay in the audit trail.
+  archived         Boolean  @default(false)
   createdAt        DateTime @default(now()) @map("created_at")
 
   group   Group    @relation(fields: [groupId], references: [id])
