@@ -32,16 +32,32 @@ model Member {
   // Actual API keys/tokens live in a secrets manager (e.g. Railway/Vault),
   // this column just points to that secret.
   brokerAccountRef String   @map("broker_account_ref")
-  riskProfileId    String?  @map("risk_profile_id")
+  riskProfileId    String?  @unique @map("risk_profile_id")
   status           MemberStatus @default(ACTIVE)
   createdAt        DateTime @default(now()) @map("created_at")
 
   group           Group @relation(fields: [groupId], references: [id])
+  riskProfile     RiskProfile? @relation(fields: [riskProfileId], references: [id])
   riskDecisions   RiskDecision[]
   orders          Order[]
   killSwitchEvents KillSwitchEvent[] @relation("MemberKillSwitch")
 
   @@map("members")
+}
+
+// Added to close a Phase 1 gap: lets each member run the same strategy at a
+// different risk tolerance instead of a hardcoded fixed lot size for everyone.
+model RiskProfile {
+  id                  String   @id @default(uuid())
+  fixedLots           Decimal  @default(0.01) @map("fixed_lots") @db.Decimal(10, 4)
+  maxDailyLossPercent Decimal? @map("max_daily_loss_percent") @db.Decimal(5, 2)
+  maxOpenPositions    Int?     @map("max_open_positions")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  member Member?
+
+  @@map("risk_profiles")
 }
 
 enum BrokerType {
@@ -60,8 +76,11 @@ model Strategy {
   groupId          String   @map("group_id")
   name             String
   sourceType       SourceType @map("source_type")
-  // Store only a hash of the webhook secret — never the plaintext secret.
-  webhookSecretHash String  @map("webhook_secret_hash")
+  // AES-256-GCM ciphertext ("iv:authTag:ciphertext" hex), never plaintext.
+  // A one-way hash (the original Phase 1 design) cannot work here — HMAC
+  // signature verification needs the actual secret back, not a hash of it.
+  // Decrypted at request time using ENCRYPTION_KEY (see src/services/encryption.js).
+  webhookSecretEncrypted String  @map("webhook_secret_encrypted")
   createdAt        DateTime @default(now()) @map("created_at")
 
   group   Group    @relation(fields: [groupId], references: [id])

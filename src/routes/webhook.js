@@ -3,31 +3,34 @@ const prisma = require("../db/prisma");
 const { verifyWebhookSignature } = require("../middleware/verifyWebhookSignature");
 const { evaluateSignalForMember } = require("../services/riskEngine");
 const { placeOrder } = require("../services/metaApiBridge");
+const { decryptSecret } = require("../services/encryption");
 
 const router = express.Router();
 
-async function getSecretHashForStrategy(strategyId) {
-  // NOTE: we store a hash, not the plaintext secret. The signature check
-  // in verifyWebhookSignature currently compares against the raw secret —
-  // before going live, switch strategies.webhookSecretHash to store the
-  // ACTUAL secret in an env-var/secrets-manager reference, and verify
-  // against that, not the hash. Flagging this now so it isn't missed:
-  // hashing the secret and then trying to HMAC-verify against the hash
-  // does not work — you need the original secret for HMAC.
+async function getSecretForStrategy(strategyId) {
+  // Fixed gap: strategies.webhookSecretEncrypted stores an AES-256-GCM
+  // ciphertext (not a one-way hash), so we can decrypt it back to the
+  // original secret here for HMAC comparison. See src/services/encryption.js.
   const strategy = await prisma.strategy.findUnique({ where: { id: strategyId } });
-  return strategy ? process.env[`STRATEGY_SECRET_${strategyId}`] : null;
+  if (!strategy) return null;
+  try {
+    return decryptSecret(strategy.webhookSecretEncrypted);
+  } catch (err) {
+    console.error(`Failed to decrypt webhook secret for strategy ${strategyId}:`, err.message);
+    return null;
+  }
 }
 
 router.post(
   "/:strategyId",
-  verifyWebhookSignature(getSecretHashForStrategy),
+  verifyWebhookSignature(getSecretForStrategy),
   async (req, res, next) => {
     try {
       const { strategyId } = req.params;
 
       const strategy = await prisma.strategy.findUnique({
         where: { id: strategyId },
-        include: { group: { include: { members: true } } },
+        include: { group: { include: { members: { include: { riskProfile: true } } } } },
       });
 
       if (!strategy) {
@@ -48,9 +51,13 @@ router.post(
       for (const member of strategy.group.members) {
         if (member.status === "REMOVED") continue;
 
+        // member.riskProfile is null if the group admin hasn't set one up yet
+        // for this person — the risk engine correctly rejects in that case
+        // rather than silently falling back to a guessed size.
         const decision = await evaluateSignalForMember(signal, member, {
-          // TODO: load real per-member risk profile once that table/config exists
-          riskProfile: { fixedLots: 0.01 },
+          riskProfile: member.riskProfile
+            ? { fixedLots: Number(member.riskProfile.fixedLots) }
+            : null,
         });
 
         let order = null;
@@ -73,10 +80,18 @@ router.post(
               volume: decision.positionSize,
               stopLoss: req.body.stopLoss,
               takeProfit: req.body.takeProfit,
+              clientId: order.id,
             });
+
+            // MetaApi returns 200 even for some broker-side rejections —
+            // stringCode !== TRADE_RETCODE_DONE means it did NOT fill.
+            const filled = brokerResult?.stringCode === "TRADE_RETCODE_DONE";
             order = await prisma.order.update({
               where: { id: order.id },
-              data: { status: "SENT", brokerOrderRef: brokerResult?.orderId ?? null },
+              data: {
+                status: filled ? "SENT" : "REJECTED",
+                brokerOrderRef: brokerResult?.orderId ?? null,
+              },
             });
           } catch (err) {
             order = await prisma.order.update({
