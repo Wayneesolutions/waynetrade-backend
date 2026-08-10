@@ -1,5 +1,10 @@
 # WayneTrade — Backend (Phase 1 MVP)
 
+> **⚠️ MERGED — see [arpanwayne/saaf-signal-backend](https://github.com/arpanwayne/saaf-signal-backend).**
+> This repo's risk engine, kill-switch, and MetaApi execution code has been
+> combined with the Saaf Signal forecast engine into one backend. This repo
+> is no longer actively developed — go to the link above for current work.
+
 Group algo-trading command center. Backend for signal ingestion, risk engine,
 kill-switch, and audit logging, per `WayneTrade_Developer_Guide.docx`.
 
