@@ -52,6 +52,11 @@ model RiskProfile {
   fixedLots           Decimal  @default(0.01) @map("fixed_lots") @db.Decimal(10, 4)
   maxDailyLossPercent Decimal? @map("max_daily_loss_percent") @db.Decimal(5, 2)
   maxOpenPositions    Int?     @map("max_open_positions")
+  // Auto profit-booking: take-profit distance from entry, as a multiple of
+  // the stop-loss distance (e.g. 2.0 = book profit at 2x the risked amount).
+  // Null disables auto profit-booking for this member — a signal's own
+  // explicit takeProfit still applies either way.
+  riskRewardRatio     Decimal? @default(2.0) @map("risk_reward_ratio") @db.Decimal(5, 2)
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
@@ -114,6 +119,7 @@ model RiskDecision {
   action       RiskAction
   reason       String
   positionSize Decimal? @map("position_size") @db.Decimal(18, 4)
+  takeProfit   Decimal? @map("take_profit") @db.Decimal(18, 4)
   createdAt    DateTime @default(now()) @map("created_at")
 
   signal Signal @relation(fields: [signalId], references: [id])

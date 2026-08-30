@@ -56,7 +56,13 @@ router.post(
         // rather than silently falling back to a guessed size.
         const decision = await evaluateSignalForMember(signal, member, {
           riskProfile: member.riskProfile
-            ? { fixedLots: Number(member.riskProfile.fixedLots) }
+            ? {
+                fixedLots: Number(member.riskProfile.fixedLots),
+                riskRewardRatio:
+                  member.riskProfile.riskRewardRatio !== null
+                    ? Number(member.riskProfile.riskRewardRatio)
+                    : null,
+              }
             : null,
         });
 
@@ -79,7 +85,11 @@ router.post(
               side: req.body.side,
               volume: decision.positionSize,
               stopLoss: req.body.stopLoss,
-              takeProfit: req.body.takeProfit,
+              // Risk engine already resolved this: signal's own explicit
+              // takeProfit if given, else auto-computed from the member's
+              // riskRewardRatio, else null — never re-read the raw payload
+              // here, or auto profit-booking silently loses to nothing.
+              takeProfit: decision.takeProfit,
               clientId: order.id,
             });
 

@@ -50,6 +50,9 @@ router.post("/group/:groupId/member", async (req, res, next) => {
           fixedLots: riskProfile.fixedLots,
           maxDailyLossPercent: riskProfile.maxDailyLossPercent ?? null,
           maxOpenPositions: riskProfile.maxOpenPositions ?? null,
+          // Omit to keep the schema default (2.0); pass null to disable
+          // auto profit-booking entirely for this member.
+          ...(riskProfile.riskRewardRatio !== undefined && { riskRewardRatio: riskProfile.riskRewardRatio }),
         },
       });
       riskProfileId = created.id;
@@ -79,7 +82,7 @@ router.post("/group/:groupId/member", async (req, res, next) => {
 router.put("/member/:memberId/risk-profile", async (req, res, next) => {
   try {
     const { memberId } = req.params;
-    const { fixedLots, maxDailyLossPercent, maxOpenPositions } = req.body;
+    const { fixedLots, maxDailyLossPercent, maxOpenPositions, riskRewardRatio } = req.body;
 
     if (fixedLots === undefined) {
       return res.status(400).json({ error: "fixedLots is required" });
@@ -88,15 +91,31 @@ router.put("/member/:memberId/risk-profile", async (req, res, next) => {
     const member = await prisma.member.findUnique({ where: { id: memberId } });
     if (!member) return res.status(404).json({ error: "Member not found" });
 
+    // riskRewardRatio: undefined leaves the existing value alone on update
+    // (or the schema default of 2.0 on create); pass null explicitly to
+    // disable auto profit-booking for this member.
+    const riskRewardRatioData =
+      riskRewardRatio !== undefined ? { riskRewardRatio } : {};
+
     let riskProfile;
     if (member.riskProfileId) {
       riskProfile = await prisma.riskProfile.update({
         where: { id: member.riskProfileId },
-        data: { fixedLots, maxDailyLossPercent: maxDailyLossPercent ?? null, maxOpenPositions: maxOpenPositions ?? null },
+        data: {
+          fixedLots,
+          maxDailyLossPercent: maxDailyLossPercent ?? null,
+          maxOpenPositions: maxOpenPositions ?? null,
+          ...riskRewardRatioData,
+        },
       });
     } else {
       riskProfile = await prisma.riskProfile.create({
-        data: { fixedLots, maxDailyLossPercent: maxDailyLossPercent ?? null, maxOpenPositions: maxOpenPositions ?? null },
+        data: {
+          fixedLots,
+          maxDailyLossPercent: maxDailyLossPercent ?? null,
+          maxOpenPositions: maxOpenPositions ?? null,
+          ...riskRewardRatioData,
+        },
       });
       await prisma.member.update({ where: { id: memberId }, data: { riskProfileId: riskProfile.id } });
     }

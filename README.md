@@ -22,8 +22,16 @@ are still not built — see "What is NOT built" below.
 - Express webhook receiver with HMAC signature verification, secret is now
   decrypted from an encrypted DB column (see "Fixed since last version" below).
 - Risk engine: kill-switch check → stop-loss check → **per-member** position
-  sizing (from `risk_profiles`, not hardcoded) → writes a `risk_decisions`
-  row for every signal/member pair, always.
+  sizing (from `risk_profiles`, not hardcoded) → **auto profit-booking**
+  (take-profit = member's `riskRewardRatio` × the stop-loss distance from the
+  signal's reference price, unless the signal already sets its own
+  `takeProfit`) → writes a `risk_decisions` row for every signal/member pair,
+  always. Both stop-loss and the computed take-profit are attached to the
+  order itself, so the broker enforces both automatically — no manual
+  profit-booking step, which is exactly the gap this closes (previously
+  `takeProfit` only ever reached the broker if the incoming signal happened
+  to include one; in practice it almost never did, so kill-switch/stop-loss
+  were the only exits that actually fired).
 - Kill-switch routes: pause/resume a member, pause a whole group. Every
   trigger is logged to `kill_switch_events` — no silent pauses.
 - MetaApi execution bridge — request/response shape now matches MetaApi's
@@ -59,6 +67,14 @@ are still not built — see "What is NOT built" below.
   honest limit below.
 
 ## What is NOT built / honest gaps that remain
+
+- **Auto profit-booking needs the signal to send a reference `price`.**
+  Without it (and without the signal setting its own `takeProfit`), no
+  take-profit is computed — the trade still goes out, just exit-only via
+  stop-loss/kill-switch as before. TradingView alerts can send this as
+  `{{close}}`; make sure the Pine Script alert JSON includes it.
+- **No trailing stop.** Take-profit and stop-loss are both fixed at order
+  placement time; neither moves as price moves in the member's favor.
 
 - **Auth is a single shared admin key, not per-user RBAC.** Anyone with the
   key can pause any member or any group, and see any dashboard. Real
