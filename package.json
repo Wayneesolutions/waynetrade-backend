@@ -11,18 +11,21 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "seed": "node prisma/seed.js",
-    "generate-secret": "node scripts/generate-strategy-secret.js"
+    "generate-secret": "node scripts/generate-strategy-secret.js",
+    "test": "node --test"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
     "@prisma/client": "^5.19.0",
-    "express": "^4.19.2",
-    "dotenv": "^16.4.5",
+    "axios": "^1.7.7",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
-    "bcryptjs": "^2.4.3",
-    "axios": "^1.7.7",
-    "express-rate-limit": "^7.4.0"
+    "twilio": "^6.1.0"
   },
   "devDependencies": {
     "prisma": "^5.19.0"

@@ -2,6 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const prisma = require("../db/prisma");
 const { encryptSecret } = require("../services/encryption");
+const { generateViewToken } = require("../services/viewToken");
 
 const router = express.Router();
 
@@ -14,11 +15,15 @@ const router = express.Router();
 
 router.post("/group", async (req, res, next) => {
   try {
-    const { name, adminUserId } = req.body;
+    const { name, adminUserId, brokerWhatsappNumber } = req.body;
     if (!name || !adminUserId) {
       return res.status(400).json({ error: "name and adminUserId are required" });
     }
-    const group = await prisma.group.create({ data: { name, adminUserId } });
+    // brokerWhatsappNumber is optional — omit it and the Layer 2 research
+    // digest still writes to the dashboard feed, just skips the WhatsApp push.
+    const group = await prisma.group.create({
+      data: { name, adminUserId, brokerWhatsappNumber: brokerWhatsappNumber ?? null },
+    });
     res.status(201).json(group);
   } catch (err) {
     next(err);
@@ -28,7 +33,7 @@ router.post("/group", async (req, res, next) => {
 router.post("/group/:groupId/member", async (req, res, next) => {
   try {
     const { groupId } = req.params;
-    const { userId, brokerType, brokerAccountRef, riskProfile } = req.body;
+    const { userId, brokerType, brokerAccountRef, whatsappNumber, riskProfile } = req.body;
 
     if (!userId || !brokerType || !brokerAccountRef) {
       return res.status(400).json({ error: "userId, brokerType, and brokerAccountRef are required" });
@@ -50,10 +55,18 @@ router.post("/group/:groupId/member", async (req, res, next) => {
           fixedLots: riskProfile.fixedLots,
           maxDailyLossPercent: riskProfile.maxDailyLossPercent ?? null,
           maxOpenPositions: riskProfile.maxOpenPositions ?? null,
+          // Omit to keep the schema default (2.0); pass null to disable
+          // auto profit-booking entirely for this member.
+          ...(riskProfile.riskRewardRatio !== undefined && { riskRewardRatio: riskProfile.riskRewardRatio }),
         },
       });
       riskProfileId = created.id;
     }
+
+    // Every member gets an investor view token at creation — the plaintext
+    // is returned exactly once below (same convention as a strategy's
+    // webhook secret) and never retrievable again; only its hash is stored.
+    const { plaintext: viewTokenPlaintext, hash: viewTokenHash } = generateViewToken();
 
     const member = await prisma.member.create({
       data: {
@@ -61,12 +74,47 @@ router.post("/group/:groupId/member", async (req, res, next) => {
         userId,
         brokerType,
         brokerAccountRef,
+        whatsappNumber: whatsappNumber ?? null,
         riskProfileId,
+        viewTokenHash,
       },
       include: { riskProfile: true },
     });
 
-    res.status(201).json(member);
+    // Never echo viewTokenHash back — not a crackable secret on its own
+    // (SHA-256 of 192 random bits), but a hash has no business appearing
+    // in a response body regardless of whether it's practically useful to
+    // an attacker.
+    const { viewTokenHash: _omit, ...memberResponse } = member;
+    res.status(201).json({
+      ...memberResponse,
+      viewTokenPlaintext,
+      warning: "Save this view token now — it will not be shown again. Share it with the investor so they can see their own trades; it grants read-only access to only their own data, nothing else.",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Regenerates a member's investor view token — for a member created before
+ * this feature existed, or if a token needs to be revoked/rotated (e.g.
+ * suspected leak). The old token stops working the moment this succeeds;
+ * there is no way to recover a lost token, only issue a new one.
+ */
+router.post("/member/:memberId/view-token/regenerate", async (req, res, next) => {
+  try {
+    const { memberId } = req.params;
+    const member = await prisma.member.findUnique({ where: { id: memberId } });
+    if (!member) return res.status(404).json({ error: "Member not found" });
+
+    const { plaintext: viewTokenPlaintext, hash: viewTokenHash } = generateViewToken();
+    await prisma.member.update({ where: { id: memberId }, data: { viewTokenHash } });
+
+    res.status(200).json({
+      viewTokenPlaintext,
+      warning: "Save this view token now — it will not be shown again, and the previous token (if any) no longer works.",
+    });
   } catch (err) {
     next(err);
   }
@@ -79,7 +127,7 @@ router.post("/group/:groupId/member", async (req, res, next) => {
 router.put("/member/:memberId/risk-profile", async (req, res, next) => {
   try {
     const { memberId } = req.params;
-    const { fixedLots, maxDailyLossPercent, maxOpenPositions } = req.body;
+    const { fixedLots, maxDailyLossPercent, maxOpenPositions, riskRewardRatio } = req.body;
 
     if (fixedLots === undefined) {
       return res.status(400).json({ error: "fixedLots is required" });
@@ -88,20 +136,70 @@ router.put("/member/:memberId/risk-profile", async (req, res, next) => {
     const member = await prisma.member.findUnique({ where: { id: memberId } });
     if (!member) return res.status(404).json({ error: "Member not found" });
 
+    // riskRewardRatio: undefined leaves the existing value alone on update
+    // (or the schema default of 2.0 on create); pass null explicitly to
+    // disable auto profit-booking for this member.
+    const riskRewardRatioData =
+      riskRewardRatio !== undefined ? { riskRewardRatio } : {};
+
     let riskProfile;
     if (member.riskProfileId) {
       riskProfile = await prisma.riskProfile.update({
         where: { id: member.riskProfileId },
-        data: { fixedLots, maxDailyLossPercent: maxDailyLossPercent ?? null, maxOpenPositions: maxOpenPositions ?? null },
+        data: {
+          fixedLots,
+          maxDailyLossPercent: maxDailyLossPercent ?? null,
+          maxOpenPositions: maxOpenPositions ?? null,
+          ...riskRewardRatioData,
+        },
       });
     } else {
       riskProfile = await prisma.riskProfile.create({
-        data: { fixedLots, maxDailyLossPercent: maxDailyLossPercent ?? null, maxOpenPositions: maxOpenPositions ?? null },
+        data: {
+          fixedLots,
+          maxDailyLossPercent: maxDailyLossPercent ?? null,
+          maxOpenPositions: maxOpenPositions ?? null,
+          ...riskRewardRatioData,
+        },
       });
       await prisma.member.update({ where: { id: memberId }, data: { riskProfileId: riskProfile.id } });
     }
 
     res.status(200).json(riskProfile);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Removes a member — soft delete (status: REMOVED), never a hard delete.
+ * webhook.js already skips REMOVED members (`if (member.status ===
+ * "REMOVED") continue;`), so this immediately stops them being traded.
+ * Deliberately more permanent than the kill-switch's PAUSE: there is no
+ * "un-remove" route, matching this codebase's "no silent kill-switches"
+ * rule — logged as a kill_switch_events row so it shows up in the same
+ * audit trail as a pause, with a reason required, same as pause/resume.
+ */
+router.delete("/member/:memberId", async (req, res, next) => {
+  try {
+    const { memberId } = req.params;
+    const { triggeredBy, reason } = req.body;
+
+    if (!triggeredBy || !reason) {
+      return res.status(400).json({ error: "triggeredBy and reason are required" });
+    }
+
+    const member = await prisma.member.findUnique({ where: { id: memberId } });
+    if (!member) return res.status(404).json({ error: "Member not found" });
+
+    const [event, updated] = await prisma.$transaction([
+      prisma.killSwitchEvent.create({
+        data: { memberId, triggeredBy, reason: `REMOVED: ${reason}` },
+      }),
+      prisma.member.update({ where: { id: memberId }, data: { status: "REMOVED" } }),
+    ]);
+
+    res.status(200).json({ event, member: updated });
   } catch (err) {
     next(err);
   }
@@ -129,6 +227,11 @@ router.post("/group/:groupId/strategy", async (req, res, next) => {
     const webhookSecretEncrypted = encryptSecret(plaintextSecret);
 
     const strategy = await prisma.strategy.create({
+      // algoId deliberately omitted here — it doesn't exist yet at creation
+      // time. A strategy is registered with the exchange through the broker
+      // AFTER it's created; set the resulting Algo-ID via PUT below once the
+      // broker hands it back. Equities (KITE_CONNECT) orders on this
+      // strategy are rejected until then — see kiteConnectBridge.js.
       data: { groupId, name, sourceType, webhookSecretEncrypted },
     });
 
@@ -138,6 +241,34 @@ router.post("/group/:groupId/strategy", async (req, res, next) => {
       webhookUrlPath: `/webhook/${strategy.id}`,
       warning: "Save this secret now — it will not be shown again. Put it in TradingView's alert webhook config to sign requests.",
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Sets a strategy's SEBI Algo-ID once the broker has registered it with the
+ * exchange. Required before any KITE_CONNECT (equities) member can trade
+ * this strategy — see kiteConnectBridge.js's hard requirement.
+ */
+router.put("/strategy/:strategyId/algo-id", async (req, res, next) => {
+  try {
+    const { strategyId } = req.params;
+    const { algoId } = req.body;
+
+    if (!algoId) {
+      return res.status(400).json({ error: "algoId is required" });
+    }
+
+    const strategy = await prisma.strategy.findUnique({ where: { id: strategyId } });
+    if (!strategy) return res.status(404).json({ error: "Strategy not found" });
+
+    const updated = await prisma.strategy.update({
+      where: { id: strategyId },
+      data: { algoId },
+    });
+
+    res.status(200).json(updated);
   } catch (err) {
     next(err);
   }

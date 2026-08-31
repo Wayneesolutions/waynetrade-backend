@@ -6,10 +6,14 @@ const prisma = require("../db/prisma");
  * Deliberately simple for MVP, per the build guide:
  *   - fixed position sizing per member (from member.riskProfileId config)
  *   - hard stop-loss enforcement (rejects signal if no stop provided)
+ *   - auto profit-booking (take-profit = riskRewardRatio x stop-loss
+ *     distance from entry), attached to the order at broker level so it's
+ *     enforced the same way stop-loss already is — not a manual step.
  *   - manual kill-switch check (member or group level)
  *
  * NOT implemented yet (future phases): dynamic sizing, max-drawdown auto
- * throttling, correlation/exposure limits across members, auto-optimization.
+ * throttling, correlation/exposure limits across members, auto-optimization,
+ * trailing stops.
  * Every decision this engine makes MUST be written to risk_decisions —
  * that table is the audit trail, not a log we can skip.
  */
@@ -36,6 +40,33 @@ function getFixedPositionSize(riskProfile) {
   // Expected shape: { fixedLots: number, maxRiskPercentPerTrade: number }
   if (!riskProfile) return null;
   return riskProfile.fixedLots ?? null;
+}
+
+/**
+ * Auto profit-booking. Take-profit is never a trade blocker the way
+ * stop-loss is — a signal without enough info to compute one still trades,
+ * it just goes out with no take-profit attached (today's prior behavior).
+ *
+ * Precedence:
+ *   1. Signal explicitly sets takeProfit → honored as-is, no override.
+ *   2. Signal gives a reference price (payload.price) and the member's
+ *      risk profile has a riskRewardRatio → auto-computed as
+ *      entry +/- (riskRewardRatio x |entry - stopLoss|), direction per side.
+ *   3. Otherwise → null. Never guessed from a missing price or ratio.
+ */
+function computeTakeProfit({ payload, riskProfile }) {
+  if (payload.takeProfit !== undefined && payload.takeProfit !== null) {
+    return Number(payload.takeProfit);
+  }
+
+  const price = payload.price;
+  const ratio = riskProfile?.riskRewardRatio;
+  if (price === undefined || price === null || !ratio) return null;
+
+  const riskDistance = Math.abs(Number(price) - Number(payload.stopLoss));
+  const reward = riskDistance * Number(ratio);
+
+  return payload.side === "sell" ? Number(price) - reward : Number(price) + reward;
 }
 
 /**
@@ -84,6 +115,8 @@ async function evaluateSignalForMember(signal, member, opts = {}) {
     });
   }
 
+  const takeProfit = computeTakeProfit({ payload, riskProfile });
+
   return prisma.riskDecision.create({
     data: {
       signalId: signal.id,
@@ -91,8 +124,9 @@ async function evaluateSignalForMember(signal, member, opts = {}) {
       action: "APPROVE",
       reason: "Passed kill-switch, stop-loss, and sizing checks",
       positionSize: fixedSize,
+      takeProfit,
     },
   });
 }
 
-module.exports = { evaluateSignalForMember, isKilled };
+module.exports = { evaluateSignalForMember, isKilled, computeTakeProfit };

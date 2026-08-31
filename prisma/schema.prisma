@@ -14,13 +14,58 @@ model Group {
   id          String   @id @default(uuid())
   name        String
   adminUserId String   @map("admin_user_id")
+  // Where the broker's batched research digest (Layer 2 output) is sent.
+  // Null = digest is dashboard-only, no WhatsApp push.
+  brokerWhatsappNumber String? @map("broker_whatsapp_number")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  members      Member[]
-  strategies   Strategy[]
-  killSwitches KillSwitchEvent[] @relation("GroupKillSwitch")
+  members         Member[]
+  strategies      Strategy[]
+  killSwitches    KillSwitchEvent[] @relation("GroupKillSwitch")
+  notifications   Notification[]
+  researchSignals ResearchSignal[]
 
   @@map("groups")
+}
+
+// Layer 2 — AI research assistant output. One row per news article Claude
+// actually analyzed, kept even at LOW confidence — the audit trail doesn't
+// get to be selective about which findings it remembers. groupId null =
+// platform-wide scan not tied to one broker/group.
+model ResearchSignal {
+  id            String   @id @default(uuid())
+  groupId       String?  @map("group_id")
+  headline      String
+  sourceUrl     String?  @map("source_url")
+  sector        String?
+  bullCase      String   @map("bull_case")
+  bearCase      String   @map("bear_case")
+  riskNote      String   @map("risk_note")
+  // LOW/MEDIUM/HIGH, the risk-supervisor role's verdict — deliberately a
+  // tag, not an invented numeric score, matching forecast.py's rule that
+  // confidence must come from something countable, never be guessed.
+  confidenceTag String   @map("confidence_tag")
+
+  // Forecast-engine cross-check (saaf-signal-backend's /signal/{ticker}) —
+  // populated only when the article names a specific, resolvable ticker.
+  // Deliberately kept as SEPARATE columns from confidenceTag above, never
+  // merged into one number: the news read and the technical/historical
+  // read are two different kinds of evidence, and showing them side by
+  // side is the whole point of unifying these two engines. Null on every
+  // field means either no ticker was identifiable or the forecast-engine
+  // call failed/was skipped — the news-only analysis above still stands
+  // on its own either way.
+  ticker                  String? @map("ticker")
+  technicalDirection      String? @map("technical_direction")
+  technicalConfidence     Float?  @map("technical_confidence")
+  technicalSampleSize     Int?    @map("technical_sample_size")
+  technicalReliabilityTier String? @map("technical_reliability_tier")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  group Group? @relation(fields: [groupId], references: [id])
+
+  @@map("research_signals")
 }
 
 model Member {
@@ -34,6 +79,17 @@ model Member {
   brokerAccountRef String   @map("broker_account_ref")
   riskProfileId    String?  @unique @map("risk_profile_id")
   status           MemberStatus @default(ACTIVE)
+  // E.164 format (e.g. "+91XXXXXXXXXX"). Null = real-time WhatsApp trade
+  // alerts are skipped for this member (dashboard feed row still written).
+  whatsappNumber   String?  @map("whatsapp_number")
+  // SHA-256 hex digest of the investor's own view token — never the
+  // plaintext, same one-way-hash reasoning as a password. This is
+  // deliberately NOT the shared ADMIN_API_KEY: it grants read-only access
+  // to this ONE member's own data (see src/routes/investor.js), nothing
+  // else — no kill-switch, no onboarding, no other members. Plaintext is
+  // shown exactly once, at generation time, then never retrievable again
+  // (see onboarding.js) — the same convention as strategies.webhook_secret.
+  viewTokenHash    String?  @map("view_token_hash")
   createdAt        DateTime @default(now()) @map("created_at")
 
   group           Group @relation(fields: [groupId], references: [id])
@@ -41,6 +97,7 @@ model Member {
   riskDecisions   RiskDecision[]
   orders          Order[]
   killSwitchEvents KillSwitchEvent[] @relation("MemberKillSwitch")
+  notifications   Notification[]
 
   @@map("members")
 }
@@ -52,6 +109,11 @@ model RiskProfile {
   fixedLots           Decimal  @default(0.01) @map("fixed_lots") @db.Decimal(10, 4)
   maxDailyLossPercent Decimal? @map("max_daily_loss_percent") @db.Decimal(5, 2)
   maxOpenPositions    Int?     @map("max_open_positions")
+  // Auto profit-booking: take-profit distance from entry, as a multiple of
+  // the stop-loss distance (e.g. 2.0 = book profit at 2x the risked amount).
+  // Null disables auto profit-booking for this member — a signal's own
+  // explicit takeProfit still applies either way.
+  riskRewardRatio     Decimal? @default(2.0) @map("risk_reward_ratio") @db.Decimal(5, 2)
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
@@ -81,6 +143,13 @@ model Strategy {
   // signature verification needs the actual secret back, not a hash of it.
   // Decrypted at request time using ENCRYPTION_KEY (see src/services/encryption.js).
   webhookSecretEncrypted String  @map("webhook_secret_encrypted")
+  // SEBI Algo-ID, assigned by the exchange once this strategy is registered
+  // through an empanelled broker (there is no API to generate this — get it
+  // from the broker after registration). Required before any KITE_CONNECT
+  // (equities) member can trade this strategy; forex/MetaTrader strategies
+  // don't need one. Null = equities orders on this strategy are rejected,
+  // not silently sent untagged.
+  algoId            String?  @map("algo_id")
   createdAt        DateTime @default(now()) @map("created_at")
 
   group   Group    @relation(fields: [groupId], references: [id])
@@ -114,6 +183,7 @@ model RiskDecision {
   action       RiskAction
   reason       String
   positionSize Decimal? @map("position_size") @db.Decimal(18, 4)
+  takeProfit   Decimal? @map("take_profit") @db.Decimal(18, 4)
   createdAt    DateTime @default(now()) @map("created_at")
 
   signal Signal @relation(fields: [signalId], references: [id])
@@ -136,11 +206,18 @@ model Order {
   brokerOrderRef String?  @map("broker_order_ref")
   status         OrderStatus @default(PENDING)
   algoId         String?  @map("algo_id") // equities-only, SEBI Algo-ID
+  // Kite Connect GTT trigger id covering this order's stop-loss/take-profit
+  // (equities only — see kiteConnectBridge.js's placeProtectiveExit). Null
+  // on a KITE_CONNECT order means the position is UNPROTECTED, not that
+  // protection wasn't needed — check this before treating an equities
+  // order as safe.
+  protectiveTriggerRef String? @map("protective_trigger_ref")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   riskDecision RiskDecision @relation(fields: [riskDecisionId], references: [id])
   member       Member       @relation(fields: [memberId], references: [id])
+  notifications Notification[]
 
   @@map("orders")
 }
@@ -152,6 +229,41 @@ enum OrderStatus {
   REJECTED
   CANCELLED
   ERROR
+}
+
+// Layer 3 — real-time transparency feed. One row per message actually
+// generated (investor per-trade explanation, or broker research digest),
+// persisted here as the dashboard's source of truth regardless of whether
+// the WhatsApp push succeeded.
+model Notification {
+  id             String   @id @default(uuid())
+  audience       NotificationAudience
+  memberId       String?  @map("member_id") // set when audience = INVESTOR
+  groupId        String?  @map("group_id")  // set when audience = BROKER
+  orderId        String?  @map("order_id")  // set for per-trade investor messages
+  message        String
+  whatsappStatus NotificationDeliveryStatus @default(PENDING) @map("whatsapp_status")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  member Member? @relation(fields: [memberId], references: [id])
+  group  Group?  @relation(fields: [groupId], references: [id])
+  order  Order?  @relation(fields: [orderId], references: [id])
+
+  @@map("notifications")
+}
+
+enum NotificationAudience {
+  INVESTOR
+  BROKER
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  // Twilio not configured (TWILIO_* env vars unset) or member/group has no
+  // WhatsApp number on file — message is still saved to the dashboard feed.
+  SKIPPED_NOT_CONFIGURED
 }
 
 model KillSwitchEvent {
