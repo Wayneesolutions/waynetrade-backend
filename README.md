@@ -8,11 +8,15 @@
 Group algo-trading command center. Backend for signal ingestion, risk engine,
 kill-switch, and audit logging, per `WayneTrade_Developer_Guide.docx`.
 
-Scope of this scaffold: **Phase 1, gaps closed as of July 28, 2026** —
-Forex/Crypto via MetaTrader, per-member fixed position sizing, hard
-stop-loss, manual kill-switch, admin API-key auth. Phases 2–4 (dashboard
-frontend UI, backtesting, Kite Connect/equities, billing, multi-group scale)
-are still not built — see "What is NOT built" below.
+Scope, updated 2026-08-31: Forex/Crypto via MetaTrader **and** Indian
+equities via Kite Connect, per-member fixed position sizing, hard
+stop-loss, auto profit-booking, SEBI Algo-ID tagging on equities orders,
+manual kill-switch, admin API-key auth, real-time WhatsApp/dashboard trade
+notifications (Layer 3), and a broker-facing AI research assistant
+(Layer 2). See `docs/DEVELOPER_GUIDE.md` for the full combined-product plan
+this backend is one piece of (branded **Saaf Trade**). Backtesting,
+billing, and multi-group scale are still not built — see "What is NOT
+built" below.
 
 ## What's actually built
 
@@ -47,6 +51,29 @@ are still not built — see "What is NOT built" below.
   returned once in plaintext for pasting into TradingView). Closes the
   "no onboarding UI" gap on the backend side — see waynetrade-frontend for
   the form that uses these.
+- **New: Kite Connect execution bridge** (`src/services/kiteConnectBridge.js`)
+  — Indian equities orders, dispatched from the same webhook alongside
+  MetaTrader (`src/routes/webhook.js`'s `brokerExecutors` table). Every
+  equities order carries the strategy's SEBI Algo-ID
+  (`PUT /onboarding/strategy/:id/algo-id`) — a strategy with no Algo-ID has
+  its equities orders rejected outright, never sent untagged. **Stop-loss/
+  take-profit enforcement is NOT yet wired up for Kite orders** — see gaps
+  below, this is the one place equities lags behind the MetaTrader path.
+- **New: Layer 3, real-time transparency notifications**
+  (`src/services/notificationService.js`) — the moment an order's outcome
+  is known (filled or not), the investor gets a plain-language, past-tense
+  WhatsApp message plus a permanent `notifications` row for the dashboard.
+  WhatsApp delivery is best-effort (Twilio) — unconfigured or missing phone
+  number just means the dashboard row is written without a push, never a
+  blocker to the trade itself.
+- **New: Layer 2, AI research assistant** (`src/services/researchAssistant.js`,
+  `src/routes/research.js`) — `POST /research/scan` pulls recent market
+  news and runs each article through a bull-case/bear-case/risk-supervisor
+  analysis (Claude), persisting every result and sending the broker a single
+  batched WhatsApp digest of only the MEDIUM/HIGH-confidence findings.
+  `GET /research/feed` is the broker-facing dashboard feed. No in-process
+  scheduler — an external cron must hit `/research/scan` periodically, same
+  pattern as `saaf-signal-backend`'s `scheduler.py`.
 
 ## Fixed since last version (previously listed as open gaps)
 
@@ -95,11 +122,25 @@ are still not built — see "What is NOT built" below.
   `waynetrade-frontend` repo — group overview, kill-switch controls, audit
   trail, and (as of this update) an onboarding form are built; live P&L and
   charts are not.
-- **No backtesting module.** Phase 2 item, not started.
-- **Kite Connect / equities / Algo-ID tagging.** Phase 3, not started.
-  Confirm SEBI Algo-ID registration process with the broker directly.
+- **No backtesting module.** Not started.
+- **Kite Connect bridge has never touched a real Kite Connect account**,
+  same honest status as the MetaApi bridge — see `kiteConnectBridge.js`'s
+  own header comment for the specific untested pieces (access-token
+  provisioning, and critically: **no stop-loss/take-profit order placed
+  after entry** — an equities order through this bridge is not yet
+  protected the way a MetaTrader order is).
+- **Layer 2 news source is a placeholder shape.** `NEWS_API_BASE_URL`
+  defaults to a generic NewsAPI.org-style endpoint — no licensed
+  India-specific market news source is wired up yet.
+- **Layer 2/3 have no automated tests and have never run against real
+  Twilio/Anthropic/news-API credentials** — all three fail loudly (not
+  silently) when unconfigured, but "fails loudly" isn't the same as
+  "verified working."
 - **Legal/compliance review not done.** Get this reviewed before any real
-  money moves through this system.
+  money moves through this system — see `docs/SAAF_TRADE_INVESTOR_OVERVIEW.md`
+  for the compliance posture this is aiming for (broker-empanelled,
+  non-custodial, SEBI Algo-ID aligned) and `docs/DEVELOPER_GUIDE.md` §5d for
+  the still-open advisory-registration decision.
 
 ## Setup
 
@@ -108,7 +149,11 @@ npm install
 cp .env.example .env
 # Fill in: DATABASE_URL, ENCRYPTION_KEY, ADMIN_API_KEY (see .env.example for
 # how to generate each), METAAPI_TOKEN once you have a MetaApi account.
-npx prisma migrate dev --name add_risk_profiles_and_encrypted_secrets
+# Optional, only needed for the features they gate: KITE_API_KEY/SECRET
+# (equities), TWILIO_* (real-time WhatsApp notifications), NEWS_API_KEY +
+# ANTHROPIC_API_KEY (Layer 2 research assistant). Every one of these fails
+# loudly and skips its own feature, not the rest of the app, if left unset.
+npx prisma migrate dev --name add_take_profit_notifications_and_research
 npm run dev
 ```
 
@@ -135,6 +180,9 @@ npm run generate-secret
 | POST | `/onboarding/group/:groupId/member` | `X-Api-Key` | Add a member to a group, optionally with a risk profile |
 | PUT | `/onboarding/member/:memberId/risk-profile` | `X-Api-Key` | Set/replace a member's risk profile |
 | POST | `/onboarding/group/:groupId/strategy` | `X-Api-Key` | Create a strategy — returns the plaintext webhook secret **once** |
+| PUT | `/onboarding/strategy/:strategyId/algo-id` | `X-Api-Key` | Set a strategy's SEBI Algo-ID once the broker registers it with the exchange — required before any Kite Connect member can trade it |
+| GET | `/research/feed` | `X-Api-Key` | Layer 2's broker-facing feed of analyzed news signals (`?groupId=`, `?limit=`) |
+| POST | `/research/scan` | `X-Api-Key` | Triggers one Layer 2 scan pass — meant to be called by an external cron, not a user |
 
 ## Security notes
 

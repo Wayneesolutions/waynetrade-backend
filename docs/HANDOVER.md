@@ -1,45 +1,66 @@
-# Handover — Saaf Trade planning + profit-booking (this session)
+# Handover — Saaf Trade planning + full roadmap build (this session)
 
-**Date:** 2026-08-30
+**Date:** 2026-08-31 (updated; original session was 2026-08-30)
 **Scope of this session:** research/strategy discussion (market landscape,
-SEBI compliance posture, product positioning) + one concrete backend feature
-+ these three planning docs. Everything below is what a next
-developer/session needs to pick this up cold.
+SEBI compliance posture, product positioning), then a full pass through the
+developer guide's build order (§7) — auto profit-booking, Layer 3 real-time
+notifications, the Kite Connect equities adapter + Algo-ID tagging, and the
+Layer 2 AI research assistant — all built in this repo. Everything below is
+what a next developer/session needs to pick this up cold.
 
 ## 1. What was actually changed in code (this repo)
 
-Branch: `docs/saaf-trade-planning-docs` (this doc's branch — see PR).
+Branch: `docs/saaf-trade-planning-docs` (this doc's branch — see PR #2,
+updated with each piece below rather than opening new PRs).
 
 | File | Change |
 |---|---|
-| `prisma/schema.prisma` | Added `RiskProfile.riskRewardRatio` (default `2.0`) and `RiskDecision.takeProfit`. |
-| `src/services/riskEngine.js` | New `computeTakeProfit()`: signal's own `takeProfit` wins if present; else auto-computed from `payload.price` + member's `riskRewardRatio`; else `null` (unchanged behavior). Wired into `evaluateSignalForMember`. |
-| `src/routes/webhook.js` | Order placement now uses `decision.takeProfit` (engine-resolved) instead of raw `req.body.takeProfit`; also now forwards `riskRewardRatio` into the engine call (it wasn't being passed before — without this fix the feature would silently never fire). |
-| `src/routes/onboarding.js` | Both member-creation and risk-profile-update endpoints accept `riskRewardRatio`. |
-| `README.md` | Documents the new behavior and its two honest gaps (needs a reference `price` on the signal; no trailing stop). |
+| `prisma/schema.prisma` | `RiskProfile.riskRewardRatio`, `RiskDecision.takeProfit` (auto profit-booking); `Member.whatsappNumber`, `Group.brokerWhatsappNumber`, new `Notification` model (Layer 3); `Strategy.algoId`, new `ResearchSignal` model (Layer 2). |
+| `src/services/riskEngine.js` | New `computeTakeProfit()` — signal's own `takeProfit` wins if present, else auto-computed from `payload.price` + member's `riskRewardRatio`, else `null`. |
+| `src/services/kiteConnectBridge.js` | **New.** Kite Connect `placeOrder`, mirrors `metaApiBridge.js`'s shape and honest-gaps-comment convention. Requires `strategy.algoId` — throws rather than placing an untagged equities order. |
+| `src/services/notificationService.js` | **New.** `notifyInvestorOfOrder` (per-trade, past-tense) and `notifyBrokerDigest` (batched) — both persist to `notifications` first, WhatsApp (Twilio) is best-effort on top. |
+| `src/services/researchAssistant.js` | **New.** `runScan()` — fetches news (`NEWS_API_KEY`), analyzes each article with one Claude call producing a bull case/bear case/risk-supervisor LOW-MEDIUM-HIGH verdict, persists every result, sends the broker a batched digest of MEDIUM/HIGH items via `notifyBrokerDigest`. |
+| `src/routes/webhook.js` | Execution dispatch refactored into a `brokerExecutors` table (`METATRADER`, `KITE_CONNECT`) instead of a single `if`; calls `notifyInvestorOfOrder` after every order outcome (filled or not). |
+| `src/routes/research.js` | **New.** `GET /research/feed`, `POST /research/scan`. |
+| `src/routes/onboarding.js` | Accepts `riskRewardRatio`, `whatsappNumber`, `brokerWhatsappNumber`; new `PUT /onboarding/strategy/:id/algo-id`. |
+| `src/server.js` | Mounts `/research` behind `requireApiKey`. |
+| `package.json` | Added `twilio`, `@anthropic-ai/sdk`. |
+| `.env.example` | Documents `TWILIO_*`, `NEWS_API_KEY`, `NEWS_API_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_RESEARCH_MODEL`. |
+| `README.md` | Full rewrite of "what's built"/"what's not" to match the above. |
 
-**Why:** the product owner's complaint was that profit-booking almost never
-fired in practice — stop-loss and kill-switch were the only exits that
-actually happened, because `takeProfit` was only ever set if the incoming
-TradingView signal happened to include one manually. This makes it
-automatic, computed from each member's own risk tolerance, and enforced at
-the broker level exactly like stop-loss already is (no new polling/
-monitoring service needed — MetaApi accepts both on the same order).
+All of the above passed `node -c` syntax checks, `npx prisma validate`, `npx
+prisma generate`, and a live `node src/server.js` boot smoke test (against a
+dummy `DATABASE_URL` — no real Postgres, MetaApi, Kite, Twilio, or Anthropic
+credentials exist in this environment, so nothing was tested end-to-end
+against a real broker/API).
 
 ## 2. Not yet done — pick these up next
 
-- **Migration not run.** No `prisma/migrations` directory exists in this
-  repo at all (schema-only, migrated locally per-deployment per the
-  existing README convention). Whoever deploys this needs to run
-  `npx prisma migrate dev --name add_take_profit_and_risk_reward_ratio`
+- **Migration not run.** Still no `prisma/migrations` directory in this
+  repo (schema-only, migrated locally per-deployment per the existing
+  README convention). Whoever deploys this needs to run
+  `npx prisma migrate dev --name add_take_profit_notifications_and_research`
   against a real Postgres instance.
-- **`riskRewardRatio` defaults to `2.0` for every new profile.** Open
-  product question: should this be a per-member setting (current
-  implementation) or a per-strategy default an admin sets once? Not decided
-  in this session — flagged to the product owner, no answer yet.
-- Everything in `docs/DEVELOPER_GUIDE.md` §5 (equities adapter/Algo-ID,
-  Layer 2 research assistant, Layer 3 event-driven notifications) — none of
-  it is built. This session was planning + one execution-layer fix.
+- **Kite Connect orders have no stop-loss/take-profit enforcement yet** —
+  the biggest correctness gap of this session's work. Kite Connect doesn't
+  accept SL/TP on the same order call the way MetaApi does; a follow-up
+  SL-M or GTT order after entry is needed and isn't built. Do not treat an
+  equities order placed through this bridge as protected.
+- **`riskRewardRatio` defaults to `2.0` for every new profile.** Still an
+  open product question from the original session: per-member (current) or
+  per-strategy default? Not decided.
+- **The two "confidence" engines are unreconciled.** Layer 2's
+  LOW/MEDIUM/HIGH tagging (this repo, Claude-based) and `forecast.py`'s
+  sample-count-based score (`saaf-signal-backend`, Python) are parallel
+  systems today, not unified. Deciding whether/how to combine them is real
+  remaining work — see `docs/DEVELOPER_GUIDE.md` §7.
+- **No automated tests for any of this session's code.** Verified via
+  syntax checks, schema validation, and a boot smoke test only — no unit or
+  integration tests were written, and none of the four external
+  integrations (Postgres, MetaApi, Kite Connect, Twilio, Anthropic, a news
+  API) were exercised against real credentials.
+- **Unified frontend** — still not started. Both frontends remain
+  untouched this session.
 
 ## 3. Repos in play
 

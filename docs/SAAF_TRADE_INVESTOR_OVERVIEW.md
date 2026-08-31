@@ -112,21 +112,33 @@ We believe in showing this honestly, including to investors in the company:
 **Built:**
 - Full risk engine — kill-switch, mandatory stop-loss, per-person position
   sizing, automatic profit-booking, complete audit trail of every decision.
-- Forex/commodity execution via MetaTrader-connected brokers.
+- Execution for both forex/commodities (MetaTrader-connected brokers) and
+  Indian equities (Kite Connect), with exchange Algo-ID tagging on equities
+  orders as SEBI's framework requires.
+- Real-time trade notifications: the moment a trade's outcome is known, the
+  client gets a plain-language WhatsApp message and a permanent dashboard
+  record explaining what happened and why — win, loss, or rejected, shown
+  the same way every time.
+- A continuous AI research-assistant layer for brokers: scans market news,
+  runs each item through a bull-case/bear-case/risk read, and sends the
+  broker one digest of only what's actually worth their attention.
 - Honest forecast engine with a real, verifiable track record (predictions
   logged permanently, checked against real outcomes, confidence scores
   grounded in historical data, never invented).
-- WhatsApp + dashboard delivery infrastructure (currently scheduled;
-  becoming real-time next).
 
 **In progress / next:**
-- Indian equities execution (NSE/BSE), including exchange Algo-ID tagging,
-  through empanelled broker partnerships.
-- The continuous AI research-assistant layer described above (today it can
-  look up news for a single stock on request; the always-on, sector-wide
-  version is the next build).
-- Real-time (rather than scheduled) trade notifications.
-- A unified client + broker dashboard.
+- Stop-loss/take-profit enforcement on the equities side specifically —
+  the Indian-equities broker connection places the trade, but the
+  automatic exit protection that already exists for forex/commodity trades
+  isn't fully carried over there yet. We're flagging this ourselves before
+  any investor or user would need to ask.
+- Broker partnership/empanelment paperwork — the technology is built to
+  the framework's requirements; the actual broker relationships are a
+  business process running in parallel, not a code problem.
+- Unifying the AI research assistant's read with the forecast engine's
+  own track-record-based scoring into one consistent confidence signal,
+  rather than the two running side by side as they do today.
+- A single unified dashboard for clients and brokers (currently separate).
 
 ## The honest bottom line
 

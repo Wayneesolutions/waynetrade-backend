@@ -91,46 +91,53 @@ Already built and working, per `README.md`:
   voice guideline. Reuse this as Saaf Trade's brand system — wrong calls get
   the same visual weight as right ones, everywhere.
 
-## 5. What's genuinely new — not in either repo
+## 5. What's new — status per item
 
-### 5a. Equities execution adapter + Algo-ID compliance (highest priority gap)
-MetaTrader/MetaApi does not reach NSE/BSE equities. Needed:
-- A broker-API adapter interface (`placeOrder`, matching `metaApiBridge.js`'s
-  shape) with concrete implementations per empanelled broker — start with
-  one (e.g. Kite Connect), add more only against a real broker's docs, not
-  speculatively.
-- Every order tagged with the exchange-assigned **Algo-ID**
-  (`orders.algoId` already exists as a column, currently unused — wire it up
-  when the first equities adapter is built).
-- Broker-empanelment onboarding: registering Saaf Trade's strategies with
-  each partner broker as required by SEBI's principal-agent framework
-  (broker is the principal, Saaf Trade is the agent).
+### 5a. Equities execution adapter + Algo-ID compliance — BUILT (this session)
+`src/services/kiteConnectBridge.js` implements `placeOrder`, matching
+`metaApiBridge.js`'s shape, dispatched from `webhook.js`'s `brokerExecutors`
+table alongside MetaTrader. Every order carries the strategy's Algo-ID
+(`Strategy.algoId`, set via `PUT /onboarding/strategy/:id/algo-id`); a
+strategy with none has its equities orders rejected, not sent untagged.
+**Still open:** stop-loss/take-profit are NOT attached to the Kite order the
+way they are with MetaApi (Kite Connect has no single "order + SL/TP" call —
+needs a follow-up SL-M or GTT order after entry fills, not built yet — see
+the bridge's own header comment). Broker-empanelment *onboarding paperwork*
+(actually registering with a real broker) is a business step, not code —
+nothing here substitutes for that.
 
-### 5b. Layer 2 — AI research assistant for the broker
-Continuous, not on-demand: ingest licensed news/filings feeds, summarize and
-tag by sector/impact via an LLM layer, surface as a live feed on a
-broker-facing dashboard. Best-practice shape per current research: don't run
-one model straight to a confidence number — use a small multi-agent
-structure (e.g. a bull-case agent, a bear-case agent, and a risk-supervisor
-that reconciles them) to avoid a single model hallucinating conviction or
-chasing a false trend. Feed its output *into* the existing
-`forecast.py`-style honest confidence scoring, don't replace it.
+### 5b. Layer 2 — AI research assistant for the broker — BUILT (this session)
+`src/services/researchAssistant.js` + `src/routes/research.js`. Per scan
+pass: pulls recent news (`NEWS_API_KEY`), runs each article through one
+Claude call with three roles in the prompt — bull case, bear case, and a
+risk-supervisor verdict that assigns LOW/MEDIUM/HIGH (never a raw invented
+number, never higher than LOW without concrete facts in the article) —
+persists every result, and sends the broker one batched WhatsApp digest of
+just the MEDIUM/HIGH items. `GET /research/feed` is the dashboard read.
+**Simplification from the original plan:** one prompt with three roles
+inside it, not three separate model calls debating each other — cheaper and
+simpler, and the fallback if this proves too blunt in practice is to split
+it into real separate calls, not to abandon the pattern. **Still open:** no
+in-process scheduler (needs an external cron hitting `/research/scan`, same
+as `saaf-signal-backend`'s `scheduler.py` pattern); `NEWS_API_BASE_URL`
+defaults to a generic NewsAPI.org shape, no licensed India market news
+source wired up yet; this pulls in an LLM layer independent from
+`saaf-signal-backend`'s `forecast.py` rather than feeding into it — the two
+honest-confidence engines (this one's LOW/MEDIUM/HIGH tag,
+`forecast.py`'s sample-count-based score) are parallel, not yet unified.
 
-### 5c. Layer 3 — real-time transparency notifications
-Extend the existing WhatsApp/scheduler pattern from batch to **event-driven**:
-the moment an order fills (in `webhook.js`, where `order.status` becomes
-`SENT`), push immediately to two different audiences with two different
-templates:
-- **Investor**: past-tense, plain-language, tied to *their own* trade —
-  "bought X in your account, here's the news/signal that triggered it,
-  stop-loss/take-profit are Y/Z." Never forward-looking advice — that stays
-  the broker's call.
-- **Broker**: batched research-digest style, surfacing Layer 2's flagged
-  news/sector signals, not one message per trade across every client.
-
-Needs a small notification service both the execution pipeline and Layer 2
-can publish into, fanning out to WhatsApp (Twilio, already integrated) and a
-persisted dashboard feed table (new).
+### 5c. Layer 3 — real-time transparency notifications — BUILT (this session)
+`src/services/notificationService.js`, event-driven (not the old
+batch/scheduled pattern): the moment an order's outcome is known in
+`webhook.js`, the investor gets a past-tense, plain-language message —
+persisted to a `notifications` row always, WhatsApp best-effort (Twilio) on
+top. `notifyBrokerDigest` is the same primitive, used by Layer 2 for the
+batched broker digest — one notification service, two callers, per the
+original plan. **Still open:** built and wired into the trade-execution
+path in Node (`waynetrade-backend`), not into `saaf-signal-backend`'s
+Python side — a forecast-engine-triggered notification (e.g. "your watchlist
+stock just hit a signal") would need its own integration into that repo,
+not automatically covered by this.
 
 ### 5d. Advisory-registration decision (business/legal track, not code)
 If Saaf Trade ever issues its own forward-looking buy/sell calls (rather
@@ -147,41 +154,63 @@ matches what already exists and lets Node/Python stacks coexist:
 
 ```
                     ┌─────────────────────┐
-TradingView/broker  │  execution-service    │  (this repo, extended)
-signal / Layer 2  ─▶│  risk engine, kill-   │─▶ broker adapters
-   AI trigger        │  switch, audit trail  │   (MetaApi, equities APIs)
+TradingView/broker  │  execution-service    │  (this repo — risk engine,
+signal / Layer 2  ─▶│  risk engine, kill-   │   kill-switch, both broker
+   AI trigger        │  switch, audit trail  │─▶ adapters ALL BUILT)
                     └──────────┬────────────┘
                                │ order fill event
                                ▼
                     ┌─────────────────────┐
                     │ notification-service  │─▶ WhatsApp (investor + broker)
-                    │      (new, §5c)       │─▶ dashboard feed
+                    │   (this repo, BUILT)  │─▶ dashboard feed
                     └─────────────────────┘
                                ▲
                                │ flagged signals
                     ┌─────────────────────┐
-                    │  forecast-service      │  (saaf-signal-backend,
-                    │  + research-brain      │   extended with §5b)
-                    │  (honest confidence,   │
-                    │   news/sector scanning)│
+                    │  research-assistant    │  (this repo, BUILT —
+                    │   (this repo, BUILT)   │   independent of Python
+                    │  (news scan + Claude)  │   forecast-service below)
                     └─────────────────────┘
+
+                    ┌─────────────────────┐
+                    │  forecast-service      │  (saaf-signal-backend,
+                    │  (honest confidence,   │   NOT yet combined with
+                    │   sample-count based)  │   the above — still a
+                    └─────────────────────┘   separate repo/stack)
 ```
 
-Two frontends collapse into one: broker/admin dashboard (execution + kill-
-switch + Layer 2 research feed) and investor-facing app (track record +
-per-trade transparency feed + watchlist), both consuming the services above.
+All of execution-service, notification-service, and research-assistant now
+live in **this repo** (`waynetrade-backend`), as Node modules — a pragmatic
+simplification from the original two-stack (Node execution + Python
+forecast) split, made because build access this session was to this repo,
+not `saaf-signal-backend`. The forecast-service (honest sample-count-based
+confidence scoring) still lives separately in `saaf-signal-backend` and is
+NOT yet unified with the LOW/MEDIUM/HIGH tagging Layer 2 produces here —
+that unification is real remaining work, not done.
+
+Two frontends still need to collapse into one: broker/admin dashboard
+(execution + kill-switch + Layer 2 research feed) and investor-facing app
+(track record + per-trade transparency feed + watchlist), both consuming
+the services above. Neither frontend was touched this session.
 
 ## 7. Suggested build order
 
-1. **Done this session**: auto profit-booking in the risk engine (§3).
-2. Run the pending migration (`npx prisma migrate dev`) against a real DB —
-   schema changes for `riskRewardRatio`/`takeProfit` are written but not
-   yet migrated anywhere.
-3. Layer 3 event-driven notifications (smallest new surface, highest
-   trust-building value, reuses existing Twilio integration).
-4. One equities broker adapter + Algo-ID tagging (unlocks the actual Indian
-   equities market this product is meant for).
-5. Layer 2 research assistant, broker-facing only at first.
-6. Unified frontend combining both dashboards.
-7. Advisory-registration decision, revisited once Layer 2's output quality
-   is proven internally.
+1. **Done**: auto profit-booking in the risk engine (§3).
+2. **Done**: Layer 3 event-driven notifications.
+3. **Done**: Kite Connect equities adapter + Algo-ID tagging (stop-loss/
+   take-profit enforcement on Kite orders is the one piece still open
+   within this item — see §5a).
+4. **Done**: Layer 2 research assistant, broker-facing.
+5. **Still open — run the pending migration**
+   (`npx prisma migrate dev --name add_take_profit_notifications_and_research`)
+   against a real DB — every schema change above is written but not yet
+   migrated anywhere; there is still no `prisma/migrations` directory in
+   this repo.
+6. **Still open — unify the two confidence engines.** Layer 2's
+   LOW/MEDIUM/HIGH tagging (this repo) and `forecast.py`'s sample-count
+   score (`saaf-signal-backend`) are parallel today; decide whether Layer 2
+   feeds into the Python forecast engine, or the two stay separate and the
+   frontend just shows both.
+7. **Still open — unified frontend combining both dashboards.**
+8. **Still open — advisory-registration decision**, revisited once Layer
+   2's output quality is proven internally.

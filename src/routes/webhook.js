@@ -2,8 +2,61 @@ const express = require("express");
 const prisma = require("../db/prisma");
 const { verifyWebhookSignature } = require("../middleware/verifyWebhookSignature");
 const { evaluateSignalForMember } = require("../services/riskEngine");
-const { placeOrder } = require("../services/metaApiBridge");
+const { placeOrder: placeMetaTraderOrder } = require("../services/metaApiBridge");
+const { placeOrder: placeKiteOrder } = require("../services/kiteConnectBridge");
 const { decryptSecret } = require("../services/encryption");
+const { notifyInvestorOfOrder } = require("../services/notificationService");
+
+/**
+ * One broker call per supported brokerType, normalized to
+ * { filled, brokerOrderRef, algoId }. "filled" here means "the broker
+ * accepted/executed it", matching each bridge's own honest gaps (MetaApi's
+ * stringCode check is a real fill confirmation; Kite's is not — Kite only
+ * confirms the order was queued, per kiteConnectBridge.js's own gap #2).
+ */
+const brokerExecutors = {
+  async METATRADER({ member, decision, payload, orderId }) {
+    const brokerResult = await placeMetaTraderOrder({
+      metaApiAccountId: member.brokerAccountRef,
+      symbol: payload.symbol,
+      side: payload.side,
+      volume: decision.positionSize,
+      stopLoss: payload.stopLoss,
+      // Risk engine already resolved this: signal's own explicit takeProfit
+      // if given, else auto-computed from the member's riskRewardRatio,
+      // else null — never re-read the raw payload here, or auto
+      // profit-booking silently loses to nothing.
+      takeProfit: decision.takeProfit,
+      clientId: orderId,
+    });
+    // MetaApi returns 200 even for some broker-side rejections —
+    // stringCode !== TRADE_RETCODE_DONE means it did NOT fill.
+    return {
+      filled: brokerResult?.stringCode === "TRADE_RETCODE_DONE",
+      brokerOrderRef: brokerResult?.orderId ?? null,
+      algoId: null,
+    };
+  },
+
+  async KITE_CONNECT({ member, decision, payload, orderId, strategy }) {
+    const result = await placeKiteOrder({
+      accessToken: member.brokerAccountRef,
+      exchange: payload.exchange || "NSE",
+      tradingSymbol: payload.symbol,
+      side: payload.side,
+      quantity: decision.positionSize,
+      product: payload.product,
+      algoId: strategy.algoId,
+      clientId: orderId,
+    });
+    // Kite's response only confirms the order was accepted into the
+    // exchange queue, not that it filled — no synchronous fill confirmation
+    // the way MetaApi's stringCode gives us. Treated as "SENT" here, same
+    // convention as MetaApi's filled=true case; a real fill-status pipeline
+    // needs Kite's order-update websocket, not built yet.
+    return { filled: true, brokerOrderRef: result.orderId, algoId: result.algoId };
+  },
+};
 
 const router = express.Router();
 
@@ -67,7 +120,8 @@ router.post(
         });
 
         let order = null;
-        if (decision.action === "APPROVE" && member.brokerType === "METATRADER") {
+        const executor = brokerExecutors[member.brokerType];
+        if (decision.action === "APPROVE" && executor) {
           order = await prisma.order.create({
             data: {
               riskDecisionId: decision.id,
@@ -79,28 +133,19 @@ router.post(
           // Fire-and-log the execution attempt. Failures here must NOT
           // silently disappear — they go to order.status = ERROR.
           try {
-            const brokerResult = await placeOrder({
-              metaApiAccountId: member.brokerAccountRef,
-              symbol: req.body.symbol,
-              side: req.body.side,
-              volume: decision.positionSize,
-              stopLoss: req.body.stopLoss,
-              // Risk engine already resolved this: signal's own explicit
-              // takeProfit if given, else auto-computed from the member's
-              // riskRewardRatio, else null — never re-read the raw payload
-              // here, or auto profit-booking silently loses to nothing.
-              takeProfit: decision.takeProfit,
-              clientId: order.id,
+            const { filled, brokerOrderRef, algoId } = await executor({
+              member,
+              decision,
+              payload: req.body,
+              orderId: order.id,
+              strategy,
             });
-
-            // MetaApi returns 200 even for some broker-side rejections —
-            // stringCode !== TRADE_RETCODE_DONE means it did NOT fill.
-            const filled = brokerResult?.stringCode === "TRADE_RETCODE_DONE";
             order = await prisma.order.update({
               where: { id: order.id },
               data: {
                 status: filled ? "SENT" : "REJECTED",
-                brokerOrderRef: brokerResult?.orderId ?? null,
+                brokerOrderRef,
+                algoId,
               },
             });
           } catch (err) {
@@ -108,6 +153,23 @@ router.post(
               where: { id: order.id },
               data: { status: "ERROR" },
             });
+          }
+
+          // Layer 3 — real-time transparency: tell the investor what just
+          // happened in their account, win or loss, filled or not. Must
+          // never take down the webhook response if it fails — the trade
+          // itself already happened, losing the notification is a lesser
+          // failure than losing the 200 response TradingView expects.
+          try {
+            await notifyInvestorOfOrder({
+              order,
+              member,
+              decision,
+              signal,
+              strategyName: strategy.name,
+            });
+          } catch (err) {
+            console.error(`Investor notification failed for order ${order.id}:`, err.message);
           }
         }
 

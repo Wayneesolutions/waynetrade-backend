@@ -8,6 +8,7 @@ const webhookRoutes = require("./routes/webhook");
 const killSwitchRoutes = require("./routes/killSwitch");
 const dashboardRoutes = require("./routes/dashboard");
 const onboardingRoutes = require("./routes/onboarding");
+const researchRoutes = require("./routes/research");
 const { requireApiKey } = require("./middleware/requireApiKey");
 
 const app = express();
@@ -36,6 +37,7 @@ app.use("/webhook", webhookLimiter, webhookRoutes);
 app.use("/kill-switch", requireApiKey, killSwitchRoutes);
 app.use("/dashboard", requireApiKey, dashboardRoutes);
 app.use("/onboarding", requireApiKey, onboardingRoutes);
+app.use("/research", requireApiKey, researchRoutes);
 
 // Central error handler — never leak stack traces to clients.
 app.use((err, req, res, next) => {

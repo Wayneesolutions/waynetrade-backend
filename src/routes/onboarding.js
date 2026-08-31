@@ -14,11 +14,15 @@ const router = express.Router();
 
 router.post("/group", async (req, res, next) => {
   try {
-    const { name, adminUserId } = req.body;
+    const { name, adminUserId, brokerWhatsappNumber } = req.body;
     if (!name || !adminUserId) {
       return res.status(400).json({ error: "name and adminUserId are required" });
     }
-    const group = await prisma.group.create({ data: { name, adminUserId } });
+    // brokerWhatsappNumber is optional — omit it and the Layer 2 research
+    // digest still writes to the dashboard feed, just skips the WhatsApp push.
+    const group = await prisma.group.create({
+      data: { name, adminUserId, brokerWhatsappNumber: brokerWhatsappNumber ?? null },
+    });
     res.status(201).json(group);
   } catch (err) {
     next(err);
@@ -28,7 +32,7 @@ router.post("/group", async (req, res, next) => {
 router.post("/group/:groupId/member", async (req, res, next) => {
   try {
     const { groupId } = req.params;
-    const { userId, brokerType, brokerAccountRef, riskProfile } = req.body;
+    const { userId, brokerType, brokerAccountRef, whatsappNumber, riskProfile } = req.body;
 
     if (!userId || !brokerType || !brokerAccountRef) {
       return res.status(400).json({ error: "userId, brokerType, and brokerAccountRef are required" });
@@ -64,6 +68,7 @@ router.post("/group/:groupId/member", async (req, res, next) => {
         userId,
         brokerType,
         brokerAccountRef,
+        whatsappNumber: whatsappNumber ?? null,
         riskProfileId,
       },
       include: { riskProfile: true },
@@ -148,6 +153,11 @@ router.post("/group/:groupId/strategy", async (req, res, next) => {
     const webhookSecretEncrypted = encryptSecret(plaintextSecret);
 
     const strategy = await prisma.strategy.create({
+      // algoId deliberately omitted here — it doesn't exist yet at creation
+      // time. A strategy is registered with the exchange through the broker
+      // AFTER it's created; set the resulting Algo-ID via PUT below once the
+      // broker hands it back. Equities (KITE_CONNECT) orders on this
+      // strategy are rejected until then — see kiteConnectBridge.js.
       data: { groupId, name, sourceType, webhookSecretEncrypted },
     });
 
@@ -157,6 +167,34 @@ router.post("/group/:groupId/strategy", async (req, res, next) => {
       webhookUrlPath: `/webhook/${strategy.id}`,
       warning: "Save this secret now — it will not be shown again. Put it in TradingView's alert webhook config to sign requests.",
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Sets a strategy's SEBI Algo-ID once the broker has registered it with the
+ * exchange. Required before any KITE_CONNECT (equities) member can trade
+ * this strategy — see kiteConnectBridge.js's hard requirement.
+ */
+router.put("/strategy/:strategyId/algo-id", async (req, res, next) => {
+  try {
+    const { strategyId } = req.params;
+    const { algoId } = req.body;
+
+    if (!algoId) {
+      return res.status(400).json({ error: "algoId is required" });
+    }
+
+    const strategy = await prisma.strategy.findUnique({ where: { id: strategyId } });
+    if (!strategy) return res.status(404).json({ error: "Strategy not found" });
+
+    const updated = await prisma.strategy.update({
+      where: { id: strategyId },
+      data: { algoId },
+    });
+
+    res.status(200).json(updated);
   } catch (err) {
     next(err);
   }
