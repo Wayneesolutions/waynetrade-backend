@@ -206,11 +206,11 @@ the services above. Neither frontend was touched this session.
    closes the gap item 3 originally left open. Still open within this:
    entry + protection are two separate broker requests, not atomic (see
    §5a's "Still open" note).
-6. **Still open — run the pending migration**
-   (`npx prisma migrate dev --name add_take_profit_notifications_research_and_kite_protection`)
-   against a real DB — every schema change above is written but not yet
-   migrated anywhere; there is still no `prisma/migrations` directory in
-   this repo.
+6. **Done**: migration generated and applied against a real local Postgres
+   (`prisma/migrations/20260831070121_...`), with the onboarding routes and
+   a signed webhook signal run end-to-end against it to confirm schema and
+   app agree — see README.md's Setup section. A real deployment target now
+   just needs `npx prisma migrate deploy`, not an interactive `migrate dev`.
 7. **Still open — unify the two confidence engines.** Layer 2's
    LOW/MEDIUM/HIGH tagging (this repo) and `forecast.py`'s sample-count
    score (`saaf-signal-backend`) are parallel today; decide whether Layer 2

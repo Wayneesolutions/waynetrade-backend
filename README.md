@@ -168,9 +168,22 @@ cp .env.example .env
 # (equities), TWILIO_* (real-time WhatsApp notifications), NEWS_API_KEY +
 # ANTHROPIC_API_KEY (Layer 2 research assistant). Every one of these fails
 # loudly and skips its own feature, not the rest of the app, if left unset.
-npx prisma migrate dev --name add_take_profit_notifications_research_and_kite_protection
+npx prisma migrate deploy   # applies the committed migrations, first-time setup
 npm run dev
 ```
+
+`prisma/migrations/` is committed — the single
+`20260831070121_add_take_profit_notifications_research_and_kite_protection`
+migration creates the entire schema (this repo never had an earlier
+migration checked in, so it's also the initial-schema migration, not just
+an incremental one). It was generated and applied against a real local
+Postgres 16 instance, and the onboarding routes + a signed webhook signal
+were run end-to-end against the resulting database to confirm the schema
+and the app actually agree with each other — not just schema-validated in
+isolation. `migrate deploy` (not `migrate dev`) is the right command for a
+fresh environment: it applies existing migrations non-interactively and
+never tries to generate a new one. Use `migrate dev` again only when you
+change `schema.prisma` further and need a new migration generated.
 
 To register a new strategy's webhook secret:
 ```bash
