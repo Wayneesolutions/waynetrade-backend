@@ -11,7 +11,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "seed": "node prisma/seed.js",
-    "generate-secret": "node scripts/generate-strategy-secret.js"
+    "generate-secret": "node scripts/generate-strategy-secret.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

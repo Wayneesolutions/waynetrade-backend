@@ -142,14 +142,19 @@ If it does apply:
 - **Non-custodial statement in the Terms of Service** — explicit, not
   implied, that Saaf Trade never holds client funds/securities.
 - **DPDP Act 2023 (India's data protection law) — a real, concrete gap not
-  yet addressed anywhere in this codebase.** This platform now stores
+  yet fully addressed anywhere in this codebase.** This platform stores
   members' WhatsApp numbers (`Member.whatsappNumber`) and generates
   detailed personal-financial messages sent to them
   (`notificationService.js`). That's personal data under the DPDP Act.
-  Needed: a privacy policy, a lawful basis for processing, and a data
-  retention/deletion policy — none of which exist yet. This should not
-  wait for the broker-partnership track; it applies to the code as it
-  exists today, with or without a broker.
+  A first-pass draft privacy policy now exists —
+  `docs/PRIVACY_POLICY_DRAFT.md` — grounded in exactly what this codebase
+  collects, shares, and retains today. It is explicitly a draft: it
+  surfaces two real product gaps that still need resolving before
+  publishing anything binding — (1) no consent-capture step exists before
+  an admin enters a member's data, and (2) no retention/deletion policy is
+  implemented (every table grows forever). This should not wait for the
+  broker-partnership track; it applies to the code as it exists today,
+  with or without a broker.
 - **Terms of Service / liability disclaimers** for the platform itself,
   separate from any single broker's contract.
 - **A named compliance owner** — someone whose job it is to keep this list
@@ -163,8 +168,10 @@ If it does apply:
    Bring them `SAAF_TRADE_INVESTOR_OVERVIEW.md` and this document.
 2. Get their read on Track 2 (RA/RIA) applicability now, while the product
    is still small — cheaper to adjust the design than to retrofit registration.
-3. Draft the DPDP-compliant privacy policy (Track 3) — this doesn't block
-   on the lawyer conversation above and can start in parallel.
+3. Get the lawyer's review of `docs/PRIVACY_POLICY_DRAFT.md` (Track 3,
+   draft already written) — resolve its two open product gaps (consent
+   capture, retention policy) and publish the real version. Doesn't block
+   on the broker conversation and can run in parallel with it.
 4. Approach one broker (Step 0-1 above) for equities, using the technical
    package that already exists.
 5. Sandbox integration test (Step 4) — this is also where the single

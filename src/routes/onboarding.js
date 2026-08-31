@@ -172,6 +172,40 @@ router.put("/member/:memberId/risk-profile", async (req, res, next) => {
 });
 
 /**
+ * Removes a member — soft delete (status: REMOVED), never a hard delete.
+ * webhook.js already skips REMOVED members (`if (member.status ===
+ * "REMOVED") continue;`), so this immediately stops them being traded.
+ * Deliberately more permanent than the kill-switch's PAUSE: there is no
+ * "un-remove" route, matching this codebase's "no silent kill-switches"
+ * rule — logged as a kill_switch_events row so it shows up in the same
+ * audit trail as a pause, with a reason required, same as pause/resume.
+ */
+router.delete("/member/:memberId", async (req, res, next) => {
+  try {
+    const { memberId } = req.params;
+    const { triggeredBy, reason } = req.body;
+
+    if (!triggeredBy || !reason) {
+      return res.status(400).json({ error: "triggeredBy and reason are required" });
+    }
+
+    const member = await prisma.member.findUnique({ where: { id: memberId } });
+    if (!member) return res.status(404).json({ error: "Member not found" });
+
+    const [event, updated] = await prisma.$transaction([
+      prisma.killSwitchEvent.create({
+        data: { memberId, triggeredBy, reason: `REMOVED: ${reason}` },
+      }),
+      prisma.member.update({ where: { id: memberId }, data: { status: "REMOVED" } }),
+    ]);
+
+    res.status(200).json({ event, member: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * Creates a strategy and generates its webhook secret server-side — the
  * plaintext secret is returned exactly once in this response (to paste into
  * TradingView's alert config) and is never retrievable again afterwards;

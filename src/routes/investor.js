@@ -1,6 +1,7 @@
 const express = require("express");
 const prisma = require("../db/prisma");
 const { requireViewToken } = require("../middleware/requireViewToken");
+const { generateViewToken } = require("../services/viewToken");
 
 const router = express.Router();
 
@@ -68,6 +69,28 @@ router.get("/:memberId/notifications", requireViewToken, async (req, res, next) 
       take: 50,
     });
     res.status(200).json(notifications);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Self-service rotation — an investor who still HAS a working token can
+ * replace it themselves, no admin needed. This is intentionally the only
+ * self-service path: someone who has LOST their token still has to ask an
+ * admin (POST /onboarding/member/:memberId/view-token/regenerate) — there
+ * is no "forgot my token" recovery flow, because there is nothing to
+ * verify the requester's identity against other than the token itself.
+ */
+router.post("/:memberId/view-token/regenerate", requireViewToken, async (req, res, next) => {
+  try {
+    const { plaintext: viewTokenPlaintext, hash: viewTokenHash } = generateViewToken();
+    await prisma.member.update({ where: { id: req.member.id }, data: { viewTokenHash } });
+
+    res.status(200).json({
+      viewTokenPlaintext,
+      warning: "Save this view token now — it will not be shown again, and your previous token no longer works.",
+    });
   } catch (err) {
     next(err);
   }

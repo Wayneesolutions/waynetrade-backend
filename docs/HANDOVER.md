@@ -1,6 +1,6 @@
 # Handover — Saaf Trade planning + full roadmap build (this session)
 
-**Date:** 2026-08-31 (updated six times; original session was 2026-08-30)
+**Date:** 2026-08-31 (updated seven times; original session was 2026-08-30)
 **Scope of this session:** research/strategy discussion (market landscape,
 SEBI compliance posture, product positioning), a full pass through the
 developer guide's build order (§7) — auto profit-booking, Layer 3 real-time
@@ -193,8 +193,8 @@ repo set is the current source of truth.
 
 ### Not yet done, from this round specifically
 
-- View tokens have no expiry or investor-initiated rotation (admin-only,
-  via the regenerate endpoint) — noted as an open gap in both repos' READMEs.
+- View tokens have no expiry (self-service rotation now exists — see §6
+  below — but a token that's never rotated is valid forever).
 - The Saaf Signal cross-link is a single global URL per browser
   (`localStorage`, prompted once) — not fetched from any backend config, so
   it has to be set again if browser storage is cleared.
@@ -202,3 +202,48 @@ repo set is the current source of truth.
   requirements, deposit amounts, timelines) are time-sensitive and already
   noted in the document itself as needing verification against SEBI's
   current circulars before anyone acts on a specific number.
+
+## 6. Final round: closing the remaining code-shaped gaps
+
+After the round in §5, the product owner asked for everything still
+genuinely closeable by code to actually get closed, one by one. What
+happened:
+
+- **Self-service view-token rotation** — `POST
+  /investor/:memberId/view-token/regenerate`, authenticated by the
+  investor's own current token (not admin-only anymore). Verified: old
+  token dies immediately, new one works immediately, frontend updates its
+  stored connection so the session doesn't need a fresh login.
+- **Member removal** — `DELETE /onboarding/member/:memberId` (soft delete
+  to `REMOVED`), plus a "Remove" action in `waynetrade-frontend`'s
+  `MemberRow`. Verified end-to-end against the real Postgres. **Found and
+  documented, not fixed, because it's correct as-is**: a removed member's
+  view token still works — this preserves the "honest, permanent record"
+  design the rest of the platform follows, so it's called out in
+  README.md's Security notes as intentional, not left ambiguous for a
+  future session to "fix" into a bug.
+- **Unprotected-Kite-order reconciliation** — `POST
+  /ops/retry-unprotected-orders` (new `src/services/reconciliation.js` +
+  `src/routes/ops.js`). Verified against the real Postgres by manually
+  simulating the exact failure state (an order `SENT` with no
+  `protectiveTriggerRef`) and confirming the job found it, correctly
+  excluded non-Kite orders, and re-found it on a second run (idempotent).
+  This narrows the entry/GTT non-atomicity risk window; it does not and
+  cannot fully eliminate it — that would require Kite Connect itself
+  offering an atomic "order + protection" call, which it doesn't.
+- **A real test suite** — `test/`, 18 passing tests via `node --test` (no
+  new dependency), covering `computeTakeProfit`, the view-token
+  hash/generate helpers, and both broker bridges' pre-flight validation.
+  Deliberately scoped to pure logic — no test-database setup exists, so
+  nothing here touches Prisma or a live DB.
+- **`docs/PRIVACY_POLICY_DRAFT.md`** — grounded in the actual schema, not
+  a generic template. Surfaces two real product gaps needing a human
+  decision: no consent-capture step, no retention/deletion policy.
+
+**What was explicitly NOT attempted, and why**: actual broker outreach,
+actually engaging a lawyer, and the RA/RIA registration decision itself.
+These require a human contacting another human and are not code tasks —
+attempting to "complete" them in this session would have meant either
+fabricating a fake outcome or silently skipping the request, and the more
+honest move was to say so directly (which happened in-conversation) rather
+than let a docs file imply otherwise.

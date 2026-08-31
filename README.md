@@ -103,9 +103,25 @@ built" below.
   never another member's data, never kill-switch or onboarding actions.
   This is the backend for `waynetrade-frontend`'s new investor view.
   **Honest scope:** this is a shared-secret bearer token per member, not a
-  real login system (no password, no session expiry, no revocation UI
-  beyond regenerating it) — a deliberate, small, real step toward "no
-  login/user accounts" being a listed gap, not a full auth system.
+  real login system (no password, no session expiry) — a deliberate,
+  small, real step toward "no login/user accounts" being a listed gap, not
+  a full auth system. **New:** investors can now self-service rotate their
+  own token (`POST /investor/:memberId/view-token/regenerate`, using their
+  current token to authorize the new one) — no admin needed unless the
+  token is actually lost, not just suspected leaked.
+- **New: member removal** — `DELETE /onboarding/member/:memberId`
+  soft-deletes (status → `REMOVED`, logged to `kill_switch_events` same as
+  a pause). More permanent than the kill-switch's pause on purpose: there
+  is no "un-remove" route. `webhook.js` already skipped `REMOVED` members
+  before this session — this closes the gap of never being able to set
+  that status through the API/UI at all.
+- **New: unprotected-order reconciliation** (`src/services/reconciliation.js`,
+  `POST /ops/retry-unprotected-orders`) — finds every Kite Connect order
+  that's `SENT` but still has no protective GTT (`protectiveTriggerRef`
+  null) and retries placing it. Meant for an external cron, same pattern as
+  `/research/scan`; also safe to call manually after a specific
+  `protectionWarning` notification. Narrows, but does not eliminate, the
+  entry-vs-protection non-atomicity gap below.
 
 ## Fixed since last version (previously listed as open gaps)
 
@@ -141,10 +157,12 @@ built" below.
   proper user/auth system — bigger scope, not done here. Investor view
   tokens (above) are a narrower step in that direction for read-only
   access, not a substitute for real RBAC on the admin side.
-- **View tokens have no expiry or self-service revocation.** A leaked
-  token stays valid until an admin regenerates it via
-  `POST /onboarding/member/:memberId/view-token/regenerate`; there's no way
-  for the investor themselves to rotate it, and no automatic expiry.
+- **View tokens have no expiry.** Self-service rotation now exists
+  (`POST /investor/:memberId/view-token/regenerate`, authenticated with the
+  investor's own current token) — a leaked token doesn't require an admin
+  to fix, an investor can just get a new one. But there's still no
+  automatic expiry; a token is valid forever until someone (admin or
+  investor) explicitly rotates it.
 - **MetaApi bridge has never touched a real MetaApi account.** The request
   shape is now correct per MetaApi's docs, but this repo has no MetaApi
   account, no connected demo MT5 login, and has made zero real API calls.
@@ -171,20 +189,33 @@ built" below.
   before sending. Entry and protection are also two separate broker
   requests, not one atomic call — if the GTT request fails after a
   successful entry, the position is briefly (or not-so-briefly) open and
-  unprotected; the investor notification says so explicitly, but nothing
-  auto-retries it.
+  unprotected; the investor notification says so explicitly. `POST
+  /ops/retry-unprotected-orders` (new) can now be hit periodically by an
+  external cron to retry these automatically — but nothing hits that route
+  on its own yet, and it's still a retry loop, not a fix for the
+  underlying non-atomicity (a fast-moving stock could still leave a window
+  before the first successful retry).
 - **Layer 2 news source is a placeholder shape.** `NEWS_API_BASE_URL`
   defaults to a generic NewsAPI.org-style endpoint — no licensed
   India-specific market news source is wired up yet.
-- **Layer 2/3 have no automated tests and have never run against real
-  Twilio/Anthropic/news-API credentials** — all three fail loudly (not
+- **A real test suite now exists** (`test/`, `npm test`, Node's built-in
+  test runner — no new dependency) covering the risk engine's
+  take-profit math, the view-token hash/generate helpers, and both broker
+  bridges' pre-flight validation (18 tests, all passing). **Still not
+  covered**: anything touching Prisma/a real database (would need a test
+  database, not set up here), and Layer 2/3 have still never run against
+  real Twilio/Anthropic/news-API credentials — those fail loudly (not
   silently) when unconfigured, but "fails loudly" isn't the same as
   "verified working."
-- **Legal/compliance review not done.** Get this reviewed before any real
-  money moves through this system — see `docs/SAAF_TRADE_INVESTOR_OVERVIEW.md`
-  for the compliance posture this is aiming for (broker-empanelled,
-  non-custodial, SEBI Algo-ID aligned) and `docs/DEVELOPER_GUIDE.md` §5d for
-  the still-open advisory-registration decision.
+- **Legal/compliance review not done, but a starting point now exists.**
+  See `docs/SAAF_TRADE_INVESTOR_OVERVIEW.md` for the compliance posture
+  this is aiming for (broker-empanelled, non-custodial, SEBI Algo-ID
+  aligned), `docs/BROKER_PARTNERSHIP_AND_COMPLIANCE_CHECKLIST.md` for the
+  ordered action items (explicitly not legal advice), and
+  `docs/PRIVACY_POLICY_DRAFT.md` for a first-pass DPDP Act privacy policy
+  draft — all three still need an actual lawyer before any of this is
+  final, and the privacy draft specifically flags two unresolved product
+  gaps (no consent-capture step, no data retention/deletion policy).
 
 ## Setup
 
@@ -198,21 +229,28 @@ cp .env.example .env
 # ANTHROPIC_API_KEY (Layer 2 research assistant). Every one of these fails
 # loudly and skips its own feature, not the rest of the app, if left unset.
 npx prisma migrate deploy   # applies the committed migrations, first-time setup
+npm test                     # runs the test/ suite (no DB needed — see below)
 npm run dev
 ```
 
-`prisma/migrations/` is committed — the single
-`20260831070121_add_take_profit_notifications_research_and_kite_protection`
-migration creates the entire schema (this repo never had an earlier
-migration checked in, so it's also the initial-schema migration, not just
-an incremental one). It was generated and applied against a real local
-Postgres 16 instance, and the onboarding routes + a signed webhook signal
-were run end-to-end against the resulting database to confirm the schema
-and the app actually agree with each other — not just schema-validated in
-isolation. `migrate deploy` (not `migrate dev`) is the right command for a
-fresh environment: it applies existing migrations non-interactively and
-never tries to generate a new one. Use `migrate dev` again only when you
-change `schema.prisma` further and need a new migration generated.
+`prisma/migrations/` is committed — three migrations, all generated and
+applied against a real local Postgres 16 instance this repo's various
+sessions used for verification: the initial schema (this repo never had an
+earlier migration checked in, so the first one creates everything, not
+just an increment), the Layer 2/forecast-engine unification, and the
+investor view-token fields. Each round's onboarding routes and a signed
+webhook signal (or the relevant new routes) were run end-to-end against
+the resulting database to confirm schema and app actually agree — not just
+schema-validated in isolation. `migrate deploy` (not `migrate dev`) is the
+right command for a fresh environment: it applies existing migrations
+non-interactively and never tries to generate a new one. Use `migrate dev`
+again only when you change `schema.prisma` further and need a new
+migration generated.
+
+`npm test` runs `test/` via Node's built-in test runner (`node --test`, no
+new dependency) — pure-logic coverage only (take-profit math, view-token
+hashing, both broker bridges' pre-flight validation), nothing that touches
+Prisma or a real database, so it needs no setup beyond `npm install`.
 
 To register a new strategy's webhook secret:
 ```bash
@@ -245,6 +283,9 @@ npm run generate-secret
 | GET | `/investor/:memberId/overview` | `X-View-Token` | Investor's own member info, risk profile, and recent orders — **not** the admin key, scoped to exactly this one member |
 | GET | `/investor/:memberId/audit` | `X-View-Token` | Investor's own audit trail (their risk decisions + resulting orders) |
 | GET | `/investor/:memberId/notifications` | `X-View-Token` | Investor's own transparency-feed notifications only (never the group's broker digest) |
+| POST | `/investor/:memberId/view-token/regenerate` | `X-View-Token` (current) | Self-service token rotation — an investor who still has a working token can replace it themselves, no admin needed |
+| DELETE | `/onboarding/member/:memberId` | `X-Api-Key` | Removes a member (status → `REMOVED`, soft delete) — more permanent than kill-switch pause, no "un-remove" route |
+| POST | `/ops/retry-unprotected-orders` | `X-Api-Key` | Retries the protective GTT for any Kite Connect order that's `SENT` but still has no `protectiveTriggerRef` — meant for an external cron, same pattern as `/research/scan` |
 
 ## Security notes
 
@@ -256,3 +297,11 @@ npm run generate-secret
 - Kill-switch and dashboard routes require the admin API key — this is a
   minimum bar, not a substitute for real per-user auth before this handles
   real money.
+- **A `REMOVED` member's view token still works, on purpose.** Removal
+  stops future trading, not the ability to see past history — verified
+  this session (a removed test member's token still returned `200` from
+  `/investor/:memberId/overview`). Matches this platform's transparency
+  design elsewhere (wins and losses shown identically, permanently): being
+  removed from a group shouldn't also mean losing access to your own
+  historical record. If a future change makes removal also revoke view
+  access, that's a deliberate policy change, not a bug fix.

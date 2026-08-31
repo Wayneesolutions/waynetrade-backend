@@ -269,3 +269,47 @@ the services above. Neither frontend was touched this session.
    Explicitly not legal advice and not a substitute for actually engaging
    a lawyer — a checklist for the team to act on, not a decision this
    session could make on its own.
+10. **Done — the remaining code-shaped gaps from the last "what's left"
+    pass, closed one by one:**
+    - **Self-service view-token rotation** (`POST
+      /investor/:memberId/view-token/regenerate`, authenticated by the
+      investor's own current token) — no admin needed unless the token is
+      actually lost. Verified: old token dies the instant rotation
+      succeeds, new one works immediately.
+    - **Member removal** (`DELETE /onboarding/member/:memberId`, soft
+      delete to `REMOVED`, logged same as a kill-switch pause) — closes
+      the "no editing/removing members" gap for members specifically
+      (strategies still have no remove/edit route). Verified end-to-end,
+      including confirming `webhook.js`'s existing `REMOVED` skip and a
+      deliberate design decision: a removed member's view token still
+      works (historical transparency persists after removal — see
+      README.md's Security notes for why this isn't a bug).
+    - **Unprotected-order reconciliation** (`POST
+      /ops/retry-unprotected-orders`) — retries the protective GTT for any
+      Kite order stuck `SENT` with no `protectiveTriggerRef`. Narrows the
+      entry/protection non-atomicity gap (§5a) but doesn't eliminate it —
+      still a retry loop, and still needs an external cron to actually
+      call it periodically (none configured). Verified against the real
+      Postgres: correctly found a simulated unprotected order, correctly
+      excluded non-Kite orders, correctly re-found it on a second run
+      (idempotent, keeps retrying until resolved).
+    - **A real test suite** (`test/`, `npm test`, Node's built-in
+      `node:test` — no new dependency) — 18 passing tests covering
+      `computeTakeProfit`'s math (including the sell-side formula and the
+      "explicit 0 is honored, not falsy" edge case), the view-token
+      hash/generate helpers, and both broker bridges' pre-flight
+      validation. Deliberately scoped to pure logic only — nothing here
+      touches Prisma or a live database, so it needs no test-DB setup.
+    - **`docs/PRIVACY_POLICY_DRAFT.md`** (new) — a DPDP Act privacy policy
+      draft grounded in exactly what this codebase's schema actually
+      collects/shares/retains, not a generic template. Explicitly a draft:
+      surfaces two real product gaps (no consent-capture step before an
+      admin enters a member's data; no retention/deletion policy anywhere)
+      that need a product+legal decision, not just this document, before
+      anything gets published.
+    - **What's still genuinely not code-completable**: actual broker
+      outreach, actual legal engagement, and the RA/RIA registration
+      decision itself all require a human to go talk to another human —
+      no amount of further code closes those. See
+      `docs/BROKER_PARTNERSHIP_AND_COMPLIANCE_CHECKLIST.md`'s suggested
+      order of operations for what to do next.
