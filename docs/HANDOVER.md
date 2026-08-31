@@ -1,16 +1,20 @@
 # Handover — Saaf Trade planning + full roadmap build (this session)
 
-**Date:** 2026-08-31 (updated three times; original session was 2026-08-30)
+**Date:** 2026-08-31 (updated five times; original session was 2026-08-30)
 **Scope of this session:** research/strategy discussion (market landscape,
 SEBI compliance posture, product positioning), a full pass through the
 developer guide's build order (§7) — auto profit-booking, Layer 3 real-time
 notifications, the Kite Connect equities adapter + Algo-ID tagging, and the
 Layer 2 AI research assistant — a follow-up fix closing the Kite
 stop-loss/take-profit gap that first pass had knowingly left open (protective
-GTT orders), and finally generating + running the actual database migration
-against a real (local) Postgres instance and proving the schema and app
-agree via a real end-to-end run. Everything below is what a next
-developer/session needs to pick this up cold.
+GTT orders), generating + running the actual database migration against a
+real (local) Postgres instance and proving the schema and app agree via a
+real end-to-end run, unifying Layer 2 with `saaf-signal-backend`'s forecast
+engine (cross-checked, not merged), and finally catching
+`waynetrade-frontend` up to all of the above — including correcting an
+earlier wrong assessment that it was a near-empty scaffold (see §3).
+Everything below is what a next developer/session needs to pick this up
+cold.
 
 ## 1. What was actually changed in code (this repo)
 
@@ -98,11 +102,21 @@ none of those credentials exist in this environment.
 All under the `Wayneesolutions` GitHub org:
 
 - `waynetrade-backend` — this repo, push access, changes above live here.
-- `waynetrade-frontend` — push access, not modified this session. Currently
-  a near-empty React scaffold (`src/App.jsx` + Vite boilerplate) — the
-  README describes a fuller feature set (connect screen, kill-switch UI,
-  audit trail) than what's actually implemented; treat the README as a spec
-  to build against, not a description of working code.
+- `waynetrade-frontend` — push access. **Correction to an earlier version
+  of this doc**: this was wrongly assessed as "a near-empty React
+  scaffold" — it was not. `App.jsx` already had a working connect screen,
+  group dashboard, kill-switch UI (with required-reason prompts), per-
+  member audit trail, and onboarding forms (add member/strategy) before
+  this session touched it. This session added the missing pieces: Layer
+  2/3 UI (Transparency feed + Research assistant sections), Algo-ID
+  management per strategy, and risk:reward-ratio/WhatsApp-number fields on
+  the member/group forms — see that repo's own PR
+  (`feature/layer2-3-and-algo-id-ui`) for the full change list and how it
+  was verified (a real headless-browser run against a real backend +
+  Postgres, including actually submitting the Add Member form and
+  confirming the values landed correctly via `psql`, not just a build
+  check). Still open there: it's one shared broker/admin view, no separate
+  investor-facing dashboard, and not combined with `saaf-signal-frontend`.
 - `saaf-signal-backend` / `saaf-signal-frontend` — public, read-only access
   this session (not attached with push credentials). If build work moves
   into these repos, `add_repo` with `access: "push"` first.

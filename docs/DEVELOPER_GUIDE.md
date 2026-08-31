@@ -32,7 +32,7 @@ enforcement, and honesty about outcomes, wins and losses shown identically.
 | Repo | Stack | Role |
 |---|---|---|
 | `waynetrade-backend` | Node/Express + Prisma/Postgres | Execution + risk engine (this repo) |
-| `waynetrade-frontend` | React 19 + Vite | Group/admin dashboard (early — currently a single `App.jsx`) |
+| `waynetrade-frontend` | React 19 + Vite | Broker/admin dashboard — working connect screen, group overview, kill-switch, audit trail, onboarding, Layer 2/3 feeds (single-file `App.jsx`, not minimal — corrects an earlier wrong assessment in this doc's history) |
 | `saaf-signal-backend` | Python FastAPI + SQLite | Forecast engine + honesty ledger |
 | `saaf-signal-frontend` | Static HTML/CSS/JS, no build step | Public-facing signal/watchlist/track-record site |
 
@@ -58,11 +58,13 @@ Already built and working, per `README.md`:
 - **Admin routes** — kill-switch (pause/resume member or group, always
   logged with a reason), dashboard reads, onboarding (create
   group/member/strategy).
-- **Dashboard UI concepts** from `waynetrade-frontend`'s README (connect
-  screen, member status, kill-switch controls with required reason,
-  per-member audit trail, 15s auto-refresh) — the actual React code is
-  minimal today, so these are requirements to re-implement against the
-  combined backend, not code to lift as-is.
+- **Working dashboard React code** (`waynetrade-frontend`'s `App.jsx`) —
+  connect screen, member status, kill-switch controls with required
+  reason, per-member audit trail, 15s auto-refresh, onboarding forms, and
+  (as of §7 item 8) Layer 2/3 feeds and Algo-ID management. This is real,
+  working code to bring over/adapt, not just a spec to re-implement from
+  — an earlier version of this doc wrongly assessed it as a near-empty
+  scaffold.
 
 ## 4. What to bring from Saaf Signal
 
@@ -227,6 +229,22 @@ the services above. Neither frontend was touched this session.
    Verified against a mocked response matching `main.py`'s real shape, plus
    the unconfigured and network-failure paths — not against a live deployed
    `saaf-signal-backend` (none exists in this environment).
-8. **Still open — unified frontend combining both dashboards.**
+8. **Partially done — `waynetrade-frontend` caught up to this backend.**
+   Correction to §3 above: `waynetrade-frontend` was NOT actually a near-
+   empty scaffold (that assessment in an earlier HANDOVER.md was wrong) —
+   it already had a working connect screen, group dashboard, kill-switch
+   UI, audit trail, and onboarding forms. What it didn't have was any UI
+   for this round's backend features, now added: risk:reward
+   ratio/WhatsApp number fields on member creation, broker WhatsApp number
+   on group creation, Algo-ID status + set/update per strategy, a
+   Transparency feed section (Layer 3), and a Research assistant section
+   with a manual scan trigger (Layer 2, showing both confidence readings
+   side by side). Verified via a real headless-browser run against a real
+   backend+Postgres — not just a build check; see that repo's PR.
+   **Still open, and this is the bigger remaining gap:** this is one
+   shared broker/admin dashboard — there is no separate investor-facing
+   view (their own transparency feed only, no kill-switch/onboarding
+   controls), and it has not been combined with `saaf-signal-frontend`
+   (forecast/track-record UI) into one product surface at all.
 9. **Still open — advisory-registration decision**, revisited once Layer
    2's output quality is proven internally.

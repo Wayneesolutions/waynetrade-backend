@@ -53,4 +53,34 @@ router.get("/member/:memberId/audit", async (req, res, next) => {
   }
 });
 
+/**
+ * Layer 3's transparency feed for a group — every investor per-trade
+ * notification for the group's members, plus every broker digest sent to
+ * the group itself. This is the dashboard read side of
+ * notificationService.js; the WhatsApp push is a best-effort copy of the
+ * same rows, this endpoint is the permanent record regardless of whether
+ * that push succeeded.
+ */
+router.get("/group/:groupId/notifications", async (req, res, next) => {
+  try {
+    const { groupId } = req.params;
+    const { limit } = req.query;
+
+    const memberIds = (
+      await prisma.member.findMany({ where: { groupId }, select: { id: true } })
+    ).map((m) => m.id);
+
+    const notifications = await prisma.notification.findMany({
+      where: { OR: [{ groupId }, { memberId: { in: memberIds } }] },
+      include: { member: { select: { userId: true } }, order: { select: { status: true } } },
+      orderBy: { createdAt: "desc" },
+      take: Number(limit) || 50,
+    });
+
+    res.status(200).json(notifications);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

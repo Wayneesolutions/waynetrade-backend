@@ -74,7 +74,9 @@ built" below.
   WhatsApp message plus a permanent `notifications` row for the dashboard.
   WhatsApp delivery is best-effort (Twilio) — unconfigured or missing phone
   number just means the dashboard row is written without a push, never a
-  blocker to the trade itself.
+  blocker to the trade itself. `GET /dashboard/group/:groupId/notifications`
+  is the read side — this feed is what `waynetrade-frontend`'s
+  "Transparency feed" section renders.
 - **New: Layer 2, AI research assistant** (`src/services/researchAssistant.js`,
   `src/routes/research.js`) — `POST /research/scan` pulls recent market
   news and runs each article through a bull-case/bear-case/risk-supervisor
@@ -212,6 +214,7 @@ npm run generate-secret
 | POST | `/kill-switch/group/:groupId` | `X-Api-Key` | Pause an entire group |
 | GET | `/dashboard/group/:groupId` | `X-Api-Key` | Group + members + recent orders |
 | GET | `/dashboard/member/:memberId/audit` | `X-Api-Key` | Full risk-decision/order audit trail for a member |
+| GET | `/dashboard/group/:groupId/notifications` | `X-Api-Key` | Layer 3's transparency feed for a group — investor trade notifications + broker research digests (`?limit=`) |
 | GET | `/onboarding/groups` | `X-Api-Key` | List all groups with members + strategies |
 | POST | `/onboarding/group` | `X-Api-Key` | Create a group |
 | POST | `/onboarding/group/:groupId/member` | `X-Api-Key` | Add a member to a group, optionally with a risk profile |
