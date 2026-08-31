@@ -148,13 +148,21 @@ Python side — a forecast-engine-triggered notification (e.g. "your watchlist
 stock just hit a signal") would need its own integration into that repo,
 not automatically covered by this.
 
-### 5d. Advisory-registration decision (business/legal track, not code)
+### 5d. Advisory-registration decision (business/legal track, not code) — DONE (checklist drafted)
 If Saaf Trade ever issues its own forward-looking buy/sell calls (rather
 than only executing/automating a broker's or user's own strategy and
 explaining completed trades), that requires SEBI Research Analyst or
 Investment Adviser registration — separate from the broker-empanelment
 relationship in §5a. Decide this before Layer 2's output is exposed to
-retail users directly rather than to the broker.
+retail users directly rather than to the broker. See
+`docs/BROKER_PARTNERSHIP_AND_COMPLIANCE_CHECKLIST.md` for the ordered,
+actionable version of this — including the broker-empanelment steps this
+was originally paired with, and a genuinely new item that checklist
+surfaced: the DPDP Act 2023 (India's data protection law) applies to this
+codebase **today**, independent of any broker relationship, because it
+already stores members' WhatsApp numbers and generates personal-financial
+messages to them. Not code — a document for the team to act on, explicitly
+not a substitute for actual legal counsel.
 
 ## 6. Target architecture (proposed)
 
@@ -241,10 +249,23 @@ the services above. Neither frontend was touched this session.
    with a manual scan trigger (Layer 2, showing both confidence readings
    side by side). Verified via a real headless-browser run against a real
    backend+Postgres — not just a build check; see that repo's PR.
-   **Still open, and this is the bigger remaining gap:** this is one
-   shared broker/admin dashboard — there is no separate investor-facing
-   view (their own transparency feed only, no kill-switch/onboarding
-   controls), and it has not been combined with `saaf-signal-frontend`
-   (forecast/track-record UI) into one product surface at all.
-9. **Still open — advisory-registration decision**, revisited once Layer
-   2's output quality is proven internally.
+   **Update — the investor-facing gap is now closed, the "one product
+   surface" gap is not.** `waynetrade-frontend` now has a genuinely
+   separate `#investor` view (own connect screen, own credential type — a
+   new per-member view token, never the admin key — no kill-switch, no
+   onboarding, no other members' data), backed by three new `/investor/*`
+   backend routes. It also cross-links to `saaf-signal-frontend` (and that
+   repo now links back), verified both directions with real headless-
+   browser runs. **Still genuinely open:** this is still two separate
+   deployments with separate design systems, connected by plain external
+   links — not one merged product surface. That remains a real, bigger
+   effort, not done here.
+9. **Done — advisory-registration decision, as a checklist, not a
+   decision made for the team.** See
+   `docs/BROKER_PARTNERSHIP_AND_COMPLIANCE_CHECKLIST.md` — ordered steps
+   for both the broker-empanelment and RA/RIA-registration tracks, plus a
+   newly-surfaced item (DPDP Act 2023 data-protection compliance, which
+   applies to this codebase today regardless of the other two tracks).
+   Explicitly not legal advice and not a substitute for actually engaging
+   a lawyer — a checklist for the team to act on, not a decision this
+   session could make on its own.

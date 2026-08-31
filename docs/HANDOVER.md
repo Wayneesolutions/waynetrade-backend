@@ -1,6 +1,6 @@
 # Handover — Saaf Trade planning + full roadmap build (this session)
 
-**Date:** 2026-08-31 (updated five times; original session was 2026-08-30)
+**Date:** 2026-08-31 (updated six times; original session was 2026-08-30)
 **Scope of this session:** research/strategy discussion (market landscape,
 SEBI compliance posture, product positioning), a full pass through the
 developer guide's build order (§7) — auto profit-booking, Layer 3 real-time
@@ -10,11 +10,15 @@ stop-loss/take-profit gap that first pass had knowingly left open (protective
 GTT orders), generating + running the actual database migration against a
 real (local) Postgres instance and proving the schema and app agree via a
 real end-to-end run, unifying Layer 2 with `saaf-signal-backend`'s forecast
-engine (cross-checked, not merged), and finally catching
-`waynetrade-frontend` up to all of the above — including correcting an
-earlier wrong assessment that it was a near-empty scaffold (see §3).
-Everything below is what a next developer/session needs to pick this up
-cold.
+engine (cross-checked, not merged), catching `waynetrade-frontend` up to all
+of the above — including correcting an earlier wrong assessment that it was
+a near-empty scaffold (see §3) — and finally: a genuinely separate investor
+view (new per-member view tokens, a new `#investor` route), cross-linking
+`waynetrade-frontend` and `saaf-signal-frontend` in both directions, and a
+broker-partnership/compliance checklist document (business/legal track,
+explicitly not something this session could "complete" the way code gets
+completed — see §5, new this update). Everything below is what a next
+developer/session needs to pick this up cold.
 
 ## 1. What was actually changed in code (this repo)
 
@@ -146,3 +150,55 @@ repo set is the current source of truth.
 - See `docs/SAAF_TRADE_INVESTOR_OVERVIEW.md` for the feature list drafted
   for an investor-facing PDF, and `docs/DEVELOPER_GUIDE.md` for the full
   technical combination plan.
+
+## 5. This round's additions: investor view, cross-linking, compliance checklist
+
+- **Investor view tokens** (`waynetrade-backend`): `Member.viewTokenHash`
+  (SHA-256, one-way, plaintext shown once at creation or regeneration) plus
+  three new `GET /investor/:memberId/*` routes, protected by a NEW
+  middleware (`requireViewToken`) — completely separate from
+  `requireApiKey`. Verified for real, including the two checks that
+  actually matter for a feature like this: the admin API key does **not**
+  work as a view token (401), and one member's token does **not** unlock
+  another member's data (401) — both confirmed against the real local
+  Postgres via direct `curl` calls, not assumed from reading the code.
+- **Investor view UI** (`waynetrade-frontend`): a hash-routed `#investor`
+  app (own connect screen, own `localStorage` key, own fetch function that
+  sends `X-View-Token` and can never accidentally send `X-Api-Key`).
+  Renders only that member's own risk settings/orders/notifications/audit
+  trail — no kill-switch or onboarding control appears anywhere in this
+  part of the UI, as a second layer on top of the backend's own
+  enforcement. Verified with a real headless-browser run against real data
+  from a pre-existing member (regenerated a token for it via the new
+  backend endpoint) — screenshots show real historical order/notification/
+  audit data, correctly scoped.
+- **Cross-linking, both directions**: `waynetrade-frontend`'s investor view
+  can link out to a configured Saaf Signal URL; `saaf-signal-frontend` (this
+  session got `access: "push"` on it via `add_repo`, previously read-only)
+  now has a matching optional `SAAF_TRADE_INVESTOR_URL` config field that
+  adds a nav link when set. Both verified as genuine no-ops when
+  unconfigured, not just visually hidden. **This is cross-linking, not a
+  merge** — two separate deployments, two design systems, connected by
+  plain external links. The bigger "one product surface" effort is still
+  not done — see `DEVELOPER_GUIDE.md` §7 item 8's update.
+- **`docs/BROKER_PARTNERSHIP_AND_COMPLIANCE_CHECKLIST.md`** (new file):
+  ordered steps for broker empanelment and RA/RIA registration, plus a
+  genuinely new finding — **the DPDP Act 2023 (India's data protection law)
+  applies to this codebase today**, independent of any broker relationship,
+  because it already stores members' WhatsApp numbers and generates
+  personal-financial messages to them, with no privacy policy or retention
+  policy anywhere yet. This is a document for the team to act on with real
+  legal counsel, not a task this session could mark "done" in the sense
+  code gets marked done — flagged explicitly as such in the document itself.
+
+### Not yet done, from this round specifically
+
+- View tokens have no expiry or investor-initiated rotation (admin-only,
+  via the regenerate endpoint) — noted as an open gap in both repos' READMEs.
+- The Saaf Signal cross-link is a single global URL per browser
+  (`localStorage`, prompted once) — not fetched from any backend config, so
+  it has to be set again if browser storage is cleared.
+- The compliance checklist's SEBI-framework specifics (registration
+  requirements, deposit amounts, timelines) are time-sensitive and already
+  noted in the document itself as needing verification against SEBI's
+  current circulars before anyone acts on a specific number.
