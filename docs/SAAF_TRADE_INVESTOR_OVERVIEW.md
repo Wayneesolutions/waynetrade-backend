@@ -124,7 +124,10 @@ We believe in showing this honestly, including to investors in the company:
   the same way every time.
 - A continuous AI research-assistant layer for brokers: scans market news,
   runs each item through a bull-case/bear-case/risk read, and sends the
-  broker one digest of only what's actually worth their attention.
+  broker one digest of only what's actually worth their attention — and
+  now, when a news item names a specific stock, that read is automatically
+  cross-checked against our own historical-pattern forecast engine and both
+  are shown together.
 - Honest forecast engine with a real, verifiable track record (predictions
   logged permanently, checked against real outcomes, confidence scores
   grounded in historical data, never invented).
@@ -139,9 +142,6 @@ We believe in showing this honestly, including to investors in the company:
 - Broker partnership/empanelment paperwork — the technology is built to
   the framework's requirements; the actual broker relationships are a
   business process running in parallel, not a code problem.
-- Unifying the AI research assistant's read with the forecast engine's
-  own track-record-based scoring into one consistent confidence signal,
-  rather than the two running side by side as they do today.
 - A single unified dashboard for clients and brokers (currently separate).
 
 ## The honest bottom line

@@ -45,6 +45,22 @@ model ResearchSignal {
   // tag, not an invented numeric score, matching forecast.py's rule that
   // confidence must come from something countable, never be guessed.
   confidenceTag String   @map("confidence_tag")
+
+  // Forecast-engine cross-check (saaf-signal-backend's /signal/{ticker}) —
+  // populated only when the article names a specific, resolvable ticker.
+  // Deliberately kept as SEPARATE columns from confidenceTag above, never
+  // merged into one number: the news read and the technical/historical
+  // read are two different kinds of evidence, and showing them side by
+  // side is the whole point of unifying these two engines. Null on every
+  // field means either no ticker was identifiable or the forecast-engine
+  // call failed/was skipped — the news-only analysis above still stands
+  // on its own either way.
+  ticker                  String? @map("ticker")
+  technicalDirection      String? @map("technical_direction")
+  technicalConfidence     Float?  @map("technical_confidence")
+  technicalSampleSize     Int?    @map("technical_sample_size")
+  technicalReliabilityTier String? @map("technical_reliability_tier")
+
   createdAt     DateTime @default(now()) @map("created_at")
 
   group Group? @relation(fields: [groupId], references: [id])

@@ -83,6 +83,15 @@ built" below.
   `GET /research/feed` is the broker-facing dashboard feed. No in-process
   scheduler — an external cron must hit `/research/scan` periodically, same
   pattern as `saaf-signal-backend`'s `scheduler.py`.
+- **New: Layer 2 cross-checks the Saaf Signal forecast engine.** When an
+  article names a resolvable ticker, `researchAssistant.js` calls
+  `saaf-signal-backend`'s read-only `GET /signal/{ticker}` (set
+  `SAAF_SIGNAL_API_BASE`) and stores its `technical_direction`/
+  `technical_confidence`/`n_samples`/`reliability_tier` alongside — never
+  blended into — Layer 2's own `confidenceTag`. Two different questions
+  ("does this news matter" vs. "does history favor this direction"), shown
+  as two separate readings, on purpose. Optional: unset, or a failed
+  lookup, just skips those columns, never blocks the news-only analysis.
 
 ## Fixed since last version (previously listed as open gaps)
 

@@ -70,11 +70,19 @@ none of those credentials exist in this environment.
 - **`riskRewardRatio` defaults to `2.0` for every new profile.** Still an
   open product question from the original session: per-member (current) or
   per-strategy default? Not decided.
-- **The two "confidence" engines are unreconciled.** Layer 2's
-  LOW/MEDIUM/HIGH tagging (this repo, Claude-based) and `forecast.py`'s
-  sample-count-based score (`saaf-signal-backend`, Python) are parallel
-  systems today, not unified. Deciding whether/how to combine them is real
-  remaining work — see `docs/DEVELOPER_GUIDE.md` §7.
+- **Layer 2 now cross-checks `forecast.py` — done, with real limits.**
+  `researchAssistant.js` extracts a ticker from the article via the same
+  Claude call (new `ticker` field in the analysis prompt), then calls
+  `saaf-signal-backend`'s `GET /signal/{ticker}` and stores its reading as
+  separate `technical*` columns on `ResearchSignal` — never blended with
+  Layer 2's own `confidenceTag` into one number. Verified: a mock server
+  matching `main.py`'s exact response shape round-trips correctly, and both
+  the unconfigured (`SAAF_SIGNAL_API_BASE` unset) and network-failure paths
+  return `null` cleanly rather than throwing. **Not verified:** against a
+  real running `saaf-signal-backend` (would need Python deps + a live
+  yfinance-backed data fetch, not available in this sandbox), and ticker
+  extraction is LLM-guessed — it can miss or misformat a ticker
+  `saaf-signal-backend`'s data source doesn't recognize.
 - **No automated tests committed to the repo.** The end-to-end run above
   proved the schema/app/risk-engine/notification path works against a real
   Postgres instance, but it was a manual `curl` session in this sandbox, not

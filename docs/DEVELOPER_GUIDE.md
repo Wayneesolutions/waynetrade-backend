@@ -124,10 +124,14 @@ it into real separate calls, not to abandon the pattern. **Still open:** no
 in-process scheduler (needs an external cron hitting `/research/scan`, same
 as `saaf-signal-backend`'s `scheduler.py` pattern); `NEWS_API_BASE_URL`
 defaults to a generic NewsAPI.org shape, no licensed India market news
-source wired up yet; this pulls in an LLM layer independent from
-`saaf-signal-backend`'s `forecast.py` rather than feeding into it — the two
-honest-confidence engines (this one's LOW/MEDIUM/HIGH tag,
-`forecast.py`'s sample-count-based score) are parallel, not yet unified.
+source wired up yet. **Updated:** now cross-checks `saaf-signal-backend`'s
+`forecast.py` when an article names a resolvable ticker (via
+`SAAF_SIGNAL_API_BASE` + that service's `GET /signal/{ticker}`) — see build
+order item 7. The two engines' outputs are stored as separate columns and
+shown separately, by design: "does this news matter" (Layer 2) and "does
+history favor this direction" (`forecast.py`) are different questions, and
+merging them into one fake number would violate the same honesty rule
+`forecast.py` itself follows.
 
 ### 5c. Layer 3 — real-time transparency notifications — BUILT (this session)
 `src/services/notificationService.js`, event-driven (not the old
@@ -211,11 +215,18 @@ the services above. Neither frontend was touched this session.
    a signed webhook signal run end-to-end against it to confirm schema and
    app agree — see README.md's Setup section. A real deployment target now
    just needs `npx prisma migrate deploy`, not an interactive `migrate dev`.
-7. **Still open — unify the two confidence engines.** Layer 2's
-   LOW/MEDIUM/HIGH tagging (this repo) and `forecast.py`'s sample-count
-   score (`saaf-signal-backend`) are parallel today; decide whether Layer 2
-   feeds into the Python forecast engine, or the two stay separate and the
-   frontend just shows both.
+7. **Done**: Layer 2 cross-checks `saaf-signal-backend`'s forecast engine.
+   When an analyzed article names a resolvable ticker, `researchAssistant.js`
+   calls that service's read-only `GET /signal/{ticker}` and stores its
+   `technical_direction`/`technical_confidence`/`n_samples`/`reliability_tier`
+   on the same `ResearchSignal` row, as separate columns from Layer 2's own
+   `confidenceTag` — deliberately never blended into one number (see §5b's
+   updated note). The broker digest shows both readings on one line when
+   both exist. Optional via `SAAF_SIGNAL_API_BASE`; unset or a failed call
+   just means those columns stay null, never blocks the news-only analysis.
+   Verified against a mocked response matching `main.py`'s real shape, plus
+   the unconfigured and network-failure paths — not against a live deployed
+   `saaf-signal-backend` (none exists in this environment).
 8. **Still open — unified frontend combining both dashboards.**
 9. **Still open — advisory-registration decision**, revisited once Layer
    2's output quality is proven internally.
