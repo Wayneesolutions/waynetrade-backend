@@ -3,16 +3,16 @@ const prisma = require("../db/prisma");
 const { verifyWebhookSignature } = require("../middleware/verifyWebhookSignature");
 const { evaluateSignalForMember } = require("../services/riskEngine");
 const { placeOrder: placeMetaTraderOrder } = require("../services/metaApiBridge");
-const { placeOrder: placeKiteOrder } = require("../services/kiteConnectBridge");
+const { placeOrder: placeKiteOrder, placeProtectiveExit } = require("../services/kiteConnectBridge");
 const { decryptSecret } = require("../services/encryption");
 const { notifyInvestorOfOrder } = require("../services/notificationService");
 
 /**
  * One broker call per supported brokerType, normalized to
- * { filled, brokerOrderRef, algoId }. "filled" here means "the broker
- * accepted/executed it", matching each bridge's own honest gaps (MetaApi's
- * stringCode check is a real fill confirmation; Kite's is not — Kite only
- * confirms the order was queued, per kiteConnectBridge.js's own gap #2).
+ * { filled, brokerOrderRef, algoId, protectiveTriggerRef, protectionWarning }.
+ * "filled" here means "the broker accepted/executed it", matching each
+ * bridge's own honest gaps (MetaApi's stringCode check is a real fill
+ * confirmation; Kite's is not — Kite only confirms the order was queued).
  */
 const brokerExecutors = {
   async METATRADER({ member, decision, payload, orderId }) {
@@ -30,11 +30,15 @@ const brokerExecutors = {
       clientId: orderId,
     });
     // MetaApi returns 200 even for some broker-side rejections —
-    // stringCode !== TRADE_RETCODE_DONE means it did NOT fill.
+    // stringCode !== TRADE_RETCODE_DONE means it did NOT fill. Stop-loss/
+    // take-profit are attached to this same request and enforced by the
+    // broker directly — no separate protective step needed here, unlike Kite.
     return {
       filled: brokerResult?.stringCode === "TRADE_RETCODE_DONE",
       brokerOrderRef: brokerResult?.orderId ?? null,
       algoId: null,
+      protectiveTriggerRef: null,
+      protectionWarning: null,
     };
   },
 
@@ -49,12 +53,43 @@ const brokerExecutors = {
       algoId: strategy.algoId,
       clientId: orderId,
     });
+
+    // Entry is placed. Kite has no single "order + SL/TP" call — protection
+    // is a SEPARATE request (GTT) that can fail independently of the entry
+    // that already succeeded above. A failure here must never be silent:
+    // the position is open and unprotected until a human/broker acts.
+    let protectiveTriggerRef = null;
+    let protectionWarning = null;
+    try {
+      const protective = await placeProtectiveExit({
+        accessToken: member.brokerAccountRef,
+        exchange: payload.exchange || "NSE",
+        tradingSymbol: payload.symbol,
+        entrySide: payload.side,
+        quantity: decision.positionSize,
+        product: payload.product,
+        stopLoss: payload.stopLoss,
+        takeProfit: decision.takeProfit,
+        lastPrice: payload.price,
+      });
+      protectiveTriggerRef = protective.triggerId;
+    } catch (err) {
+      protectionWarning = `Stop-loss/take-profit protection FAILED to place (${err.message}) — this position is currently unprotected.`;
+      console.error(`Kite protective GTT failed for order ${orderId} (entry already placed):`, err.message);
+    }
+
     // Kite's response only confirms the order was accepted into the
     // exchange queue, not that it filled — no synchronous fill confirmation
     // the way MetaApi's stringCode gives us. Treated as "SENT" here, same
     // convention as MetaApi's filled=true case; a real fill-status pipeline
     // needs Kite's order-update websocket, not built yet.
-    return { filled: true, brokerOrderRef: result.orderId, algoId: result.algoId };
+    return {
+      filled: true,
+      brokerOrderRef: result.orderId,
+      algoId: result.algoId,
+      protectiveTriggerRef,
+      protectionWarning,
+    };
   },
 };
 
@@ -132,20 +167,24 @@ router.post(
 
           // Fire-and-log the execution attempt. Failures here must NOT
           // silently disappear — they go to order.status = ERROR.
+          let protectionWarning = null;
           try {
-            const { filled, brokerOrderRef, algoId } = await executor({
-              member,
-              decision,
-              payload: req.body,
-              orderId: order.id,
-              strategy,
-            });
+            const { filled, brokerOrderRef, algoId, protectiveTriggerRef, protectionWarning: warning } =
+              await executor({
+                member,
+                decision,
+                payload: req.body,
+                orderId: order.id,
+                strategy,
+              });
+            protectionWarning = warning;
             order = await prisma.order.update({
               where: { id: order.id },
               data: {
                 status: filled ? "SENT" : "REJECTED",
                 brokerOrderRef,
                 algoId,
+                protectiveTriggerRef,
               },
             });
           } catch (err) {
@@ -156,7 +195,9 @@ router.post(
           }
 
           // Layer 3 — real-time transparency: tell the investor what just
-          // happened in their account, win or loss, filled or not. Must
+          // happened in their account, win or loss, filled or not — and if
+          // an equities position's protective stop/target failed to place,
+          // that goes in THIS message too, not just a server log. Must
           // never take down the webhook response if it fails — the trade
           // itself already happened, losing the notification is a lesser
           // failure than losing the 200 response TradingView expects.
@@ -167,6 +208,7 @@ router.post(
               decision,
               signal,
               strategyName: strategy.name,
+              protectionWarning,
             });
           } catch (err) {
             console.error(`Investor notification failed for order ${order.id}:`, err.message);

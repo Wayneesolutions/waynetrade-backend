@@ -182,6 +182,12 @@ model Order {
   brokerOrderRef String?  @map("broker_order_ref")
   status         OrderStatus @default(PENDING)
   algoId         String?  @map("algo_id") // equities-only, SEBI Algo-ID
+  // Kite Connect GTT trigger id covering this order's stop-loss/take-profit
+  // (equities only — see kiteConnectBridge.js's placeProtectiveExit). Null
+  // on a KITE_CONNECT order means the position is UNPROTECTED, not that
+  // protection wasn't needed — check this before treating an equities
+  // order as safe.
+  protectiveTriggerRef String? @map("protective_trigger_ref")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

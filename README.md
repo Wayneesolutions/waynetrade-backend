@@ -56,9 +56,18 @@ built" below.
   MetaTrader (`src/routes/webhook.js`'s `brokerExecutors` table). Every
   equities order carries the strategy's SEBI Algo-ID
   (`PUT /onboarding/strategy/:id/algo-id`) — a strategy with no Algo-ID has
-  its equities orders rejected outright, never sent untagged. **Stop-loss/
-  take-profit enforcement is NOT yet wired up for Kite orders** — see gaps
-  below, this is the one place equities lags behind the MetaTrader path.
+  its equities orders rejected outright, never sent untagged.
+- **New: Kite stop-loss/take-profit via a protective GTT order.** Right
+  after an equities entry is placed, a two-leg GTT (Good Till Triggered —
+  Kite's OCO mechanism: whichever of stop-loss/take-profit fires first
+  cancels the other) covers the exit, since Kite Connect has no single
+  "order + SL/TP" call the way MetaApi does. `orders.protective_trigger_ref`
+  records the resulting GTT id. **If this GTT placement fails, the entry
+  has already gone through and the position is unprotected** — the
+  investor's WhatsApp/dashboard notification leads with an explicit
+  warning in that case (see `notificationService.js`), it is never
+  silent. This is a two-request sequence, not one atomic broker call — see
+  gaps below.
 - **New: Layer 3, real-time transparency notifications**
   (`src/services/notificationService.js`) — the moment an order's outcome
   is known (filled or not), the investor gets a plain-language, past-tense
@@ -125,10 +134,16 @@ built" below.
 - **No backtesting module.** Not started.
 - **Kite Connect bridge has never touched a real Kite Connect account**,
   same honest status as the MetaApi bridge — see `kiteConnectBridge.js`'s
-  own header comment for the specific untested pieces (access-token
-  provisioning, and critically: **no stop-loss/take-profit order placed
-  after entry** — an equities order through this bridge is not yet
-  protected the way a MetaTrader order is).
+  own header comment for the specific untested pieces: access-token
+  provisioning is not implemented, and the protective GTT's `last_price`
+  comes from the signal's own reference price, not a live quote fetched at
+  GTT-creation time — Kite validates trigger levels against the real LTP
+  and can reject ones too far from it, which this repo has no way to detect
+  before sending. Entry and protection are also two separate broker
+  requests, not one atomic call — if the GTT request fails after a
+  successful entry, the position is briefly (or not-so-briefly) open and
+  unprotected; the investor notification says so explicitly, but nothing
+  auto-retries it.
 - **Layer 2 news source is a placeholder shape.** `NEWS_API_BASE_URL`
   defaults to a generic NewsAPI.org-style endpoint — no licensed
   India-specific market news source is wired up yet.
@@ -153,7 +168,7 @@ cp .env.example .env
 # (equities), TWILIO_* (real-time WhatsApp notifications), NEWS_API_KEY +
 # ANTHROPIC_API_KEY (Layer 2 research assistant). Every one of these fails
 # loudly and skips its own feature, not the rest of the app, if left unset.
-npx prisma migrate dev --name add_take_profit_notifications_and_research
+npx prisma migrate dev --name add_take_profit_notifications_research_and_kite_protection
 npm run dev
 ```
 

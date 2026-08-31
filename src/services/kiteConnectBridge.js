@@ -16,22 +16,29 @@ const axios = require("axios");
  *      token), done via Kite's login flow before this bridge can be used
  *      for a given member. member.brokerAccountRef is expected to already
  *      resolve to a currently-valid access token in the secrets manager.
- *   2. Stop-loss and take-profit are NOT part of the same order request the
- *      way they are with MetaApi — Kite Connect has no single "place order
- *      with SL/TP attached" call. Doing this properly needs either a
- *      separate SL-M order or a GTT (Good Till Triggered) order placed
- *      right after the entry fills. NOT implemented in this pass — the risk
- *      engine's computed stopLoss/takeProfit are accepted by this function's
- *      signature but not yet sent anywhere. Do not treat an equities order
- *      placed through this bridge as protected until that follow-up order
- *      is built.
- *   3. No retry/backoff for broker-side rejections (insufficient margin,
+ *   2. Stop-loss/take-profit ARE now sent, via placeProtectiveExit()'s GTT
+ *      call right after entry (Kite has no single "order + SL/TP" call the
+ *      way MetaApi does) — but this is two separate broker requests, not
+ *      one atomic operation. If the entry order succeeds and the GTT call
+ *      then fails (network error, Kite rejects the trigger levels as too
+ *      far from last_price, member's Kite account has GTT disabled, etc.),
+ *      the position IS OPEN AND UNPROTECTED — the entry cannot be undone by
+ *      this function. Callers MUST treat that combination as urgent, not
+ *      swallow the error (see webhook.js's KITE_CONNECT executor, which
+ *      surfaces it in the investor notification).
+ *   3. placeProtectiveExit()'s GTT trigger validates against a `lastPrice`
+ *      that callers pass in from the signal's own reference price — not a
+ *      live quote fetched at GTT-creation time. Kite rejects GTT triggers
+ *      too far from the real LTP; a stale reference price on a fast-moving
+ *      stock can cause exactly that rejection (case above).
+ *   4. No retry/backoff for broker-side rejections (insufficient margin,
  *      market closed, invalid tradingsymbol) — errors are surfaced as
  *      thrown exceptions, same convention as metaApiBridge.js.
  *
- * Do NOT wire this to a funded live account until gap #2 (SL/TP
- * enforcement) is closed — an equities order with no working stop-loss is
- * exactly the failure mode the rest of this codebase exists to prevent.
+ * Do NOT wire this to a funded live account until gaps #2/#3 have been
+ * exercised against a real account — an equities order with a GTT that
+ * silently failed to place is exactly the failure mode the rest of this
+ * codebase exists to prevent.
  */
 
 const KITE_BASE_URL = "https://api.kite.trade";
@@ -108,4 +115,92 @@ async function placeOrder({
   }
 }
 
-module.exports = { placeOrder };
+/**
+ * Places a protective GTT (Good Till Triggered) order covering the entry's
+ * stop-loss and (if computed) take-profit — this is what actually closes
+ * gap #2 above. Two-leg GTT (OCO — whichever trigger fires first cancels
+ * the other) when both levels exist; single-leg (stop-loss only) when
+ * takeProfit is unavailable, since a two-leg GTT needs two trigger values.
+ *
+ * MUST be called right after placeOrder()'s entry succeeds. If this throws,
+ * the entry order has ALREADY been placed — the caller is responsible for
+ * treating "entry placed, protection failed" as urgent, not for retrying
+ * this blindly (see gap #2/#3 in this file's header).
+ */
+async function placeProtectiveExit({
+  accessToken,
+  exchange,
+  tradingSymbol,
+  entrySide, // "buy" | "sell" — the entry's side; the exit leg(s) are the opposite
+  quantity,
+  product,
+  stopLoss,
+  takeProfit,
+  lastPrice,
+}) {
+  if (!KITE_API_KEY) {
+    throw new Error("KITE_API_KEY not configured — cannot place protective exit yet");
+  }
+  if (!accessToken) {
+    throw new Error("Member has no valid Kite access token configured");
+  }
+  if (!stopLoss) {
+    throw new Error("No stopLoss given — refusing to leave an equities position unprotected");
+  }
+  if (!lastPrice) {
+    throw new Error(
+      "No reference price (signal's payload.price) given — GTT requires a last_price to validate trigger levels against"
+    );
+  }
+
+  const exitTransactionType = entrySide === "buy" ? "SELL" : "BUY";
+  const exitLeg = (triggerPrice) => ({
+    exchange,
+    tradingsymbol: tradingSymbol,
+    transaction_type: exitTransactionType,
+    quantity: Number(quantity),
+    order_type: "LIMIT",
+    product: product || "MIS",
+    price: triggerPrice,
+  });
+
+  const hasTakeProfit = takeProfit !== undefined && takeProfit !== null;
+  const triggerValues = hasTakeProfit ? [Number(stopLoss), Number(takeProfit)] : [Number(stopLoss)];
+  const orders = hasTakeProfit
+    ? [exitLeg(Number(stopLoss)), exitLeg(Number(takeProfit))]
+    : [exitLeg(Number(stopLoss))];
+
+  const body = new URLSearchParams({
+    condition: JSON.stringify({
+      exchange,
+      tradingsymbol: tradingSymbol,
+      trigger_values: triggerValues,
+      last_price: Number(lastPrice),
+    }),
+    orders: JSON.stringify(orders),
+    type: hasTakeProfit ? "two-leg" : "single",
+  });
+
+  try {
+    const response = await axios.post(`${KITE_BASE_URL}/gtt/triggers`, body, {
+      headers: {
+        Authorization: `token ${KITE_API_KEY}:${accessToken}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Kite-Version": "3",
+      },
+      timeout: 15000,
+    });
+    return { triggerId: response.data?.data?.trigger_id };
+  } catch (err) {
+    if (err.response) {
+      const status = err.response.status;
+      const data = err.response.data;
+      throw new Error(
+        `Kite GTT request failed (${status}): ${data?.message || JSON.stringify(data)}`
+      );
+    }
+    throw err;
+  }
+}
+
+module.exports = { placeOrder, placeProtectiveExit };

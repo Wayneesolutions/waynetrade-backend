@@ -99,10 +99,13 @@ Already built and working, per `README.md`:
 table alongside MetaTrader. Every order carries the strategy's Algo-ID
 (`Strategy.algoId`, set via `PUT /onboarding/strategy/:id/algo-id`); a
 strategy with none has its equities orders rejected, not sent untagged.
-**Still open:** stop-loss/take-profit are NOT attached to the Kite order the
-way they are with MetaApi (Kite Connect has no single "order + SL/TP" call —
-needs a follow-up SL-M or GTT order after entry fills, not built yet — see
-the bridge's own header comment). Broker-empanelment *onboarding paperwork*
+Stop-loss/take-profit are now enforced too, via `placeProtectiveExit`'s
+two-leg GTT order placed right after entry (Kite has no single "order +
+SL/TP" call the way MetaApi does). **Still open:** entry and protection are
+two separate broker requests — a GTT failure after a successful entry
+leaves the position briefly unprotected (surfaced to the investor
+immediately, not silently); the GTT's trigger-price validation uses the
+signal's own reference price, not a live Kite quote. Broker-empanelment *onboarding paperwork*
 (actually registering with a real broker) is a business step, not code —
 nothing here substitutes for that.
 
@@ -197,20 +200,22 @@ the services above. Neither frontend was touched this session.
 
 1. **Done**: auto profit-booking in the risk engine (§3).
 2. **Done**: Layer 3 event-driven notifications.
-3. **Done**: Kite Connect equities adapter + Algo-ID tagging (stop-loss/
-   take-profit enforcement on Kite orders is the one piece still open
-   within this item — see §5a).
+3. **Done**: Kite Connect equities adapter + Algo-ID tagging.
 4. **Done**: Layer 2 research assistant, broker-facing.
-5. **Still open — run the pending migration**
-   (`npx prisma migrate dev --name add_take_profit_notifications_and_research`)
+5. **Done**: Kite stop-loss/take-profit via a protective GTT order (§5a) —
+   closes the gap item 3 originally left open. Still open within this:
+   entry + protection are two separate broker requests, not atomic (see
+   §5a's "Still open" note).
+6. **Still open — run the pending migration**
+   (`npx prisma migrate dev --name add_take_profit_notifications_research_and_kite_protection`)
    against a real DB — every schema change above is written but not yet
    migrated anywhere; there is still no `prisma/migrations` directory in
    this repo.
-6. **Still open — unify the two confidence engines.** Layer 2's
+7. **Still open — unify the two confidence engines.** Layer 2's
    LOW/MEDIUM/HIGH tagging (this repo) and `forecast.py`'s sample-count
    score (`saaf-signal-backend`) are parallel today; decide whether Layer 2
    feeds into the Python forecast engine, or the two stay separate and the
    frontend just shows both.
-7. **Still open — unified frontend combining both dashboards.**
-8. **Still open — advisory-registration decision**, revisited once Layer
+8. **Still open — unified frontend combining both dashboards.**
+9. **Still open — advisory-registration decision**, revisited once Layer
    2's output quality is proven internally.

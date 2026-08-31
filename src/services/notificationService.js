@@ -85,13 +85,17 @@ function formatMoney(value) {
  * a failed/rejected order with the same weight as a filled one is the same
  * "wins and losses shown identically" rule the forecast engine uses.
  */
-async function notifyInvestorOfOrder({ order, member, decision, signal, strategyName }) {
+async function notifyInvestorOfOrder({ order, member, decision, signal, strategyName, protectionWarning }) {
   const payload = signal.rawPayload || {};
   const symbol = payload.symbol;
   const side = (payload.side || "").toUpperCase();
   const placed = order.status === "SENT" || order.status === "FILLED";
 
   const lines = [];
+  // A failed protective GTT (Kite equities only) leads the message — this
+  // is more urgent than the rest of the trade explanation, never buried
+  // under it.
+  if (protectionWarning) lines.push(`⚠️ ${protectionWarning}`);
   if (placed) {
     lines.push(`${side} ${decision.positionSize ?? ""} ${symbol} placed in your account.`.replace(/\s+/g, " ").trim());
     const sl = formatMoney(payload.stopLoss);

@@ -114,7 +114,10 @@ We believe in showing this honestly, including to investors in the company:
   sizing, automatic profit-booking, complete audit trail of every decision.
 - Execution for both forex/commodities (MetaTrader-connected brokers) and
   Indian equities (Kite Connect), with exchange Algo-ID tagging on equities
-  orders as SEBI's framework requires.
+  orders as SEBI's framework requires, and automatic stop-loss/take-profit
+  protection on both — including on the equities side, where the broker's
+  own system requires it to be placed as a separate protective order right
+  after entry, not bundled into the same request.
 - Real-time trade notifications: the moment a trade's outcome is known, the
   client gets a plain-language WhatsApp message and a permanent dashboard
   record explaining what happened and why — win, loss, or rejected, shown
@@ -127,11 +130,12 @@ We believe in showing this honestly, including to investors in the company:
   grounded in historical data, never invented).
 
 **In progress / next:**
-- Stop-loss/take-profit enforcement on the equities side specifically —
-  the Indian-equities broker connection places the trade, but the
-  automatic exit protection that already exists for forex/commodity trades
-  isn't fully carried over there yet. We're flagging this ourselves before
-  any investor or user would need to ask.
+- Hardening the equities protective-order path — because that protection
+  is a second step after the trade itself (a broker-side requirement, not
+  a design choice we made), we're building in an explicit, immediate alert
+  if that second step ever fails, rather than treating "trade placed" as
+  automatically meaning "trade protected." We're flagging this distinction
+  ourselves before any investor or user would need to ask.
 - Broker partnership/empanelment paperwork — the technology is built to
   the framework's requirements; the actual broker relationships are a
   business process running in parallel, not a code problem.

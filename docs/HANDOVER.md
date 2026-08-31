@@ -1,12 +1,14 @@
 # Handover — Saaf Trade planning + full roadmap build (this session)
 
-**Date:** 2026-08-31 (updated; original session was 2026-08-30)
+**Date:** 2026-08-31 (updated twice; original session was 2026-08-30)
 **Scope of this session:** research/strategy discussion (market landscape,
-SEBI compliance posture, product positioning), then a full pass through the
+SEBI compliance posture, product positioning), a full pass through the
 developer guide's build order (§7) — auto profit-booking, Layer 3 real-time
 notifications, the Kite Connect equities adapter + Algo-ID tagging, and the
-Layer 2 AI research assistant — all built in this repo. Everything below is
-what a next developer/session needs to pick this up cold.
+Layer 2 AI research assistant — then a follow-up fix closing the Kite
+stop-loss/take-profit gap that first pass had knowingly left open (protective
+GTT orders, see §1 below). Everything below is what a next developer/session
+needs to pick this up cold.
 
 ## 1. What was actually changed in code (this repo)
 
@@ -17,10 +19,10 @@ updated with each piece below rather than opening new PRs).
 |---|---|
 | `prisma/schema.prisma` | `RiskProfile.riskRewardRatio`, `RiskDecision.takeProfit` (auto profit-booking); `Member.whatsappNumber`, `Group.brokerWhatsappNumber`, new `Notification` model (Layer 3); `Strategy.algoId`, new `ResearchSignal` model (Layer 2). |
 | `src/services/riskEngine.js` | New `computeTakeProfit()` — signal's own `takeProfit` wins if present, else auto-computed from `payload.price` + member's `riskRewardRatio`, else `null`. |
-| `src/services/kiteConnectBridge.js` | **New.** Kite Connect `placeOrder`, mirrors `metaApiBridge.js`'s shape and honest-gaps-comment convention. Requires `strategy.algoId` — throws rather than placing an untagged equities order. |
-| `src/services/notificationService.js` | **New.** `notifyInvestorOfOrder` (per-trade, past-tense) and `notifyBrokerDigest` (batched) — both persist to `notifications` first, WhatsApp (Twilio) is best-effort on top. |
+| `src/services/kiteConnectBridge.js` | **New**, then extended. `placeOrder` (mirrors `metaApiBridge.js`'s shape, requires `strategy.algoId`) plus `placeProtectiveExit` — places a two-leg GTT (Kite's OCO mechanism) covering stop-loss/take-profit right after entry, since Kite has no single "order + SL/TP" call. `Order.protectiveTriggerRef` records the resulting GTT id. |
+| `src/services/notificationService.js` | **New**, then extended. `notifyInvestorOfOrder` (per-trade, past-tense) and `notifyBrokerDigest` (batched) — both persist to `notifications` first, WhatsApp (Twilio) is best-effort on top. `notifyInvestorOfOrder` now accepts `protectionWarning` and leads the message with it (⚠️) when a Kite protective GTT failed to place. |
 | `src/services/researchAssistant.js` | **New.** `runScan()` — fetches news (`NEWS_API_KEY`), analyzes each article with one Claude call producing a bull case/bear case/risk-supervisor LOW-MEDIUM-HIGH verdict, persists every result, sends the broker a batched digest of MEDIUM/HIGH items via `notifyBrokerDigest`. |
-| `src/routes/webhook.js` | Execution dispatch refactored into a `brokerExecutors` table (`METATRADER`, `KITE_CONNECT`) instead of a single `if`; calls `notifyInvestorOfOrder` after every order outcome (filled or not). |
+| `src/routes/webhook.js` | Execution dispatch refactored into a `brokerExecutors` table (`METATRADER`, `KITE_CONNECT`) instead of a single `if`; calls `notifyInvestorOfOrder` after every order outcome (filled or not); `KITE_CONNECT` now calls `placeProtectiveExit` right after entry and threads a `protectionWarning` through to the notification if it fails. |
 | `src/routes/research.js` | **New.** `GET /research/feed`, `POST /research/scan`. |
 | `src/routes/onboarding.js` | Accepts `riskRewardRatio`, `whatsappNumber`, `brokerWhatsappNumber`; new `PUT /onboarding/strategy/:id/algo-id`. |
 | `src/server.js` | Mounts `/research` behind `requireApiKey`. |
@@ -39,13 +41,21 @@ against a real broker/API).
 - **Migration not run.** Still no `prisma/migrations` directory in this
   repo (schema-only, migrated locally per-deployment per the existing
   README convention). Whoever deploys this needs to run
-  `npx prisma migrate dev --name add_take_profit_notifications_and_research`
+  `npx prisma migrate dev --name add_take_profit_notifications_research_and_kite_protection`
   against a real Postgres instance.
-- **Kite Connect orders have no stop-loss/take-profit enforcement yet** —
-  the biggest correctness gap of this session's work. Kite Connect doesn't
-  accept SL/TP on the same order call the way MetaApi does; a follow-up
-  SL-M or GTT order after entry is needed and isn't built. Do not treat an
-  equities order placed through this bridge as protected.
+- **Kite Connect stop-loss/take-profit is now wired up (protective GTT),
+  but it's a second broker request, not one atomic call with the entry.**
+  If the entry succeeds and the GTT then fails — wrong trigger-price band,
+  Kite account has GTT disabled, network error — the position is open and
+  unprotected; `webhook.js` surfaces this to the investor immediately via
+  `protectionWarning`, but nothing auto-retries the GTT placement, and
+  there's no ops-facing alert beyond the investor's own WhatsApp/dashboard
+  message and a `console.error`. Whoever owns this next should decide
+  whether that's enough, or whether it needs a retry loop / broker-side
+  alert too. Also: the GTT's `last_price` comes from the signal's own
+  reference price, not a live Kite quote — could get rejected by Kite's own
+  price-band validation on a fast-moving stock, and this repo has no way to
+  detect that in advance.
 - **`riskRewardRatio` defaults to `2.0` for every new profile.** Still an
   open product question from the original session: per-member (current) or
   per-strategy default? Not decided.
