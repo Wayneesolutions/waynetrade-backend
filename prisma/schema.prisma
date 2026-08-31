@@ -82,6 +82,14 @@ model Member {
   // E.164 format (e.g. "+91XXXXXXXXXX"). Null = real-time WhatsApp trade
   // alerts are skipped for this member (dashboard feed row still written).
   whatsappNumber   String?  @map("whatsapp_number")
+  // SHA-256 hex digest of the investor's own view token — never the
+  // plaintext, same one-way-hash reasoning as a password. This is
+  // deliberately NOT the shared ADMIN_API_KEY: it grants read-only access
+  // to this ONE member's own data (see src/routes/investor.js), nothing
+  // else — no kill-switch, no onboarding, no other members. Plaintext is
+  // shown exactly once, at generation time, then never retrievable again
+  // (see onboarding.js) — the same convention as strategies.webhook_secret.
+  viewTokenHash    String?  @map("view_token_hash")
   createdAt        DateTime @default(now()) @map("created_at")
 
   group           Group @relation(fields: [groupId], references: [id])

@@ -94,6 +94,18 @@ built" below.
   ("does this news matter" vs. "does history favor this direction"), shown
   as two separate readings, on purpose. Optional: unset, or a failed
   lookup, just skips those columns, never blocks the news-only analysis.
+- **New: investor-only view tokens** (`src/services/viewToken.js`,
+  `src/middleware/requireViewToken.js`, `src/routes/investor.js`) — every
+  member gets a per-member view token at creation (SHA-256-hashed at rest,
+  plaintext shown once), completely separate from the shared
+  `ADMIN_API_KEY`. `GET /investor/:memberId/*` grants read-only access to
+  exactly that one member's own overview/audit-trail/notifications —
+  never another member's data, never kill-switch or onboarding actions.
+  This is the backend for `waynetrade-frontend`'s new investor view.
+  **Honest scope:** this is a shared-secret bearer token per member, not a
+  real login system (no password, no session expiry, no revocation UI
+  beyond regenerating it) — a deliberate, small, real step toward "no
+  login/user accounts" being a listed gap, not a full auth system.
 
 ## Fixed since last version (previously listed as open gaps)
 
@@ -126,7 +138,13 @@ built" below.
 - **Auth is a single shared admin key, not per-user RBAC.** Anyone with the
   key can pause any member or any group, and see any dashboard. Real
   per-person permissions (e.g. "member X can only pause themselves") need a
-  proper user/auth system — bigger scope, not done here.
+  proper user/auth system — bigger scope, not done here. Investor view
+  tokens (above) are a narrower step in that direction for read-only
+  access, not a substitute for real RBAC on the admin side.
+- **View tokens have no expiry or self-service revocation.** A leaked
+  token stays valid until an admin regenerates it via
+  `POST /onboarding/member/:memberId/view-token/regenerate`; there's no way
+  for the investor themselves to rotate it, and no automatic expiry.
 - **MetaApi bridge has never touched a real MetaApi account.** The request
   shape is now correct per MetaApi's docs, but this repo has no MetaApi
   account, no connected demo MT5 login, and has made zero real API calls.
@@ -217,12 +235,16 @@ npm run generate-secret
 | GET | `/dashboard/group/:groupId/notifications` | `X-Api-Key` | Layer 3's transparency feed for a group — investor trade notifications + broker research digests (`?limit=`) |
 | GET | `/onboarding/groups` | `X-Api-Key` | List all groups with members + strategies |
 | POST | `/onboarding/group` | `X-Api-Key` | Create a group |
-| POST | `/onboarding/group/:groupId/member` | `X-Api-Key` | Add a member to a group, optionally with a risk profile |
+| POST | `/onboarding/group/:groupId/member` | `X-Api-Key` | Add a member to a group, optionally with a risk profile — returns the plaintext investor view token **once** |
 | PUT | `/onboarding/member/:memberId/risk-profile` | `X-Api-Key` | Set/replace a member's risk profile |
+| POST | `/onboarding/member/:memberId/view-token/regenerate` | `X-Api-Key` | Issues a fresh investor view token for a member (e.g. one created before this feature existed, or a suspected-leaked token) — invalidates the old one, returns the new plaintext **once** |
 | POST | `/onboarding/group/:groupId/strategy` | `X-Api-Key` | Create a strategy — returns the plaintext webhook secret **once** |
 | PUT | `/onboarding/strategy/:strategyId/algo-id` | `X-Api-Key` | Set a strategy's SEBI Algo-ID once the broker registers it with the exchange — required before any Kite Connect member can trade it |
 | GET | `/research/feed` | `X-Api-Key` | Layer 2's broker-facing feed of analyzed news signals (`?groupId=`, `?limit=`) |
 | POST | `/research/scan` | `X-Api-Key` | Triggers one Layer 2 scan pass — meant to be called by an external cron, not a user |
+| GET | `/investor/:memberId/overview` | `X-View-Token` | Investor's own member info, risk profile, and recent orders — **not** the admin key, scoped to exactly this one member |
+| GET | `/investor/:memberId/audit` | `X-View-Token` | Investor's own audit trail (their risk decisions + resulting orders) |
+| GET | `/investor/:memberId/notifications` | `X-View-Token` | Investor's own transparency-feed notifications only (never the group's broker digest) |
 
 ## Security notes
 

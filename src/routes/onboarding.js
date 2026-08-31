@@ -2,6 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const prisma = require("../db/prisma");
 const { encryptSecret } = require("../services/encryption");
+const { generateViewToken } = require("../services/viewToken");
 
 const router = express.Router();
 
@@ -62,6 +63,11 @@ router.post("/group/:groupId/member", async (req, res, next) => {
       riskProfileId = created.id;
     }
 
+    // Every member gets an investor view token at creation — the plaintext
+    // is returned exactly once below (same convention as a strategy's
+    // webhook secret) and never retrievable again; only its hash is stored.
+    const { plaintext: viewTokenPlaintext, hash: viewTokenHash } = generateViewToken();
+
     const member = await prisma.member.create({
       data: {
         groupId,
@@ -70,11 +76,45 @@ router.post("/group/:groupId/member", async (req, res, next) => {
         brokerAccountRef,
         whatsappNumber: whatsappNumber ?? null,
         riskProfileId,
+        viewTokenHash,
       },
       include: { riskProfile: true },
     });
 
-    res.status(201).json(member);
+    // Never echo viewTokenHash back — not a crackable secret on its own
+    // (SHA-256 of 192 random bits), but a hash has no business appearing
+    // in a response body regardless of whether it's practically useful to
+    // an attacker.
+    const { viewTokenHash: _omit, ...memberResponse } = member;
+    res.status(201).json({
+      ...memberResponse,
+      viewTokenPlaintext,
+      warning: "Save this view token now — it will not be shown again. Share it with the investor so they can see their own trades; it grants read-only access to only their own data, nothing else.",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Regenerates a member's investor view token — for a member created before
+ * this feature existed, or if a token needs to be revoked/rotated (e.g.
+ * suspected leak). The old token stops working the moment this succeeds;
+ * there is no way to recover a lost token, only issue a new one.
+ */
+router.post("/member/:memberId/view-token/regenerate", async (req, res, next) => {
+  try {
+    const { memberId } = req.params;
+    const member = await prisma.member.findUnique({ where: { id: memberId } });
+    if (!member) return res.status(404).json({ error: "Member not found" });
+
+    const { plaintext: viewTokenPlaintext, hash: viewTokenHash } = generateViewToken();
+    await prisma.member.update({ where: { id: memberId }, data: { viewTokenHash } });
+
+    res.status(200).json({
+      viewTokenPlaintext,
+      warning: "Save this view token now — it will not be shown again, and the previous token (if any) no longer works.",
+    });
   } catch (err) {
     next(err);
   }
