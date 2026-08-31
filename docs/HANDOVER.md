@@ -1,250 +1,205 @@
-# Handover — Saaf Trade planning + full roadmap build (this session)
+# Saaf Trade — Handover (final, consolidated)
 
-**Date:** 2026-08-31 (updated seven times; original session was 2026-08-30)
-**Scope of this session:** research/strategy discussion (market landscape,
-SEBI compliance posture, product positioning), a full pass through the
-developer guide's build order (§7) — auto profit-booking, Layer 3 real-time
-notifications, the Kite Connect equities adapter + Algo-ID tagging, and the
-Layer 2 AI research assistant — a follow-up fix closing the Kite
-stop-loss/take-profit gap that first pass had knowingly left open (protective
-GTT orders), generating + running the actual database migration against a
-real (local) Postgres instance and proving the schema and app agree via a
-real end-to-end run, unifying Layer 2 with `saaf-signal-backend`'s forecast
-engine (cross-checked, not merged), catching `waynetrade-frontend` up to all
-of the above — including correcting an earlier wrong assessment that it was
-a near-empty scaffold (see §3) — and finally: a genuinely separate investor
-view (new per-member view tokens, a new `#investor` route), cross-linking
-`waynetrade-frontend` and `saaf-signal-frontend` in both directions, and a
-broker-partnership/compliance checklist document (business/legal track,
-explicitly not something this session could "complete" the way code gets
-completed — see §5, new this update). Everything below is what a next
-developer/session needs to pick this up cold.
+**Date:** 2026-08-31
+**What this file is:** a single clean summary of everything done and
+everything left, across the whole project so far — replacing the older
+version of this file, which had become a seven-round chronological log.
+That log's detail isn't lost — it's in this repo's git history and in
+`DEVELOPER_GUIDE.md` — this file is the "start here" version for anyone
+(including a future you) picking this project up cold.
 
-## 1. What was actually changed in code (this repo)
+---
 
-Branch: `docs/saaf-trade-planning-docs` (this doc's branch — see PR #2,
-updated with each piece below rather than opening new PRs).
+## 1. The product, in one paragraph
 
-| File | Change |
+**Saaf Trade** = **WayneTrade** (algo-trading execution + risk engine) +
+**Saaf Signal** (honest, non-guaranteed stock forecast tool), combined
+under one plan. The pitch is **not** "guaranteed returns" — that framing
+was explicitly rejected mid-project as both false and a SEBI compliance
+violation. The real differentiator: **less manual research burden on the
+broker, less manual effort for the investor, and full transparency** —
+every automated action gets explained to the investor in plain language,
+in real time, instead of trust being asked for blind. AI plays a
+broker-facing research-assistant role (scans news, flags risk) — it does
+not hand retail users its own buy/sell calls, which is a deliberate design
+constraint tied to staying out of SEBI's advisory-registration territory
+(see §5).
+
+Three layers:
+- **Layer 1 — Execution**: one signal comes in (from TradingView/a
+  strategy), the risk engine applies stop-loss, position sizing, kill-switch
+  checks, and now **auto profit-booking**, then the order goes to the
+  broker (MetaTrader via MetaApi, or Zerodha via Kite Connect).
+- **Layer 2 — AI research assistant (broker-facing only)**: scans market
+  news, produces a bull case/bear case/risk verdict per story, cross-checks
+  against Saaf Signal's own technical forecast, and digests anything
+  medium/high-risk to the broker.
+- **Layer 3 — Transparency**: every order and every research flag gets
+  explained to the investor — WhatsApp + a dashboard — in past tense
+  ("here's what happened and why"), never as a forward-looking tip.
+
+---
+
+## 2. What's actually built and verified — by repo
+
+### `waynetrade-backend` (this repo) — Node/Express + Prisma + Postgres
+
+Everything below was verified for real against a local Postgres 16
+instance and real HTTP calls in this session's sandbox — not just read
+through as code.
+
+| Area | What exists |
 |---|---|
-| `prisma/schema.prisma` | `RiskProfile.riskRewardRatio`, `RiskDecision.takeProfit` (auto profit-booking); `Member.whatsappNumber`, `Group.brokerWhatsappNumber`, new `Notification` model (Layer 3); `Strategy.algoId`, new `ResearchSignal` model (Layer 2). |
-| `src/services/riskEngine.js` | New `computeTakeProfit()` — signal's own `takeProfit` wins if present, else auto-computed from `payload.price` + member's `riskRewardRatio`, else `null`. |
-| `src/services/kiteConnectBridge.js` | **New**, then extended. `placeOrder` (mirrors `metaApiBridge.js`'s shape, requires `strategy.algoId`) plus `placeProtectiveExit` — places a two-leg GTT (Kite's OCO mechanism) covering stop-loss/take-profit right after entry, since Kite has no single "order + SL/TP" call. `Order.protectiveTriggerRef` records the resulting GTT id. |
-| `src/services/notificationService.js` | **New**, then extended. `notifyInvestorOfOrder` (per-trade, past-tense) and `notifyBrokerDigest` (batched) — both persist to `notifications` first, WhatsApp (Twilio) is best-effort on top. `notifyInvestorOfOrder` now accepts `protectionWarning` and leads the message with it (⚠️) when a Kite protective GTT failed to place. |
-| `src/services/researchAssistant.js` | **New.** `runScan()` — fetches news (`NEWS_API_KEY`), analyzes each article with one Claude call producing a bull case/bear case/risk-supervisor LOW-MEDIUM-HIGH verdict, persists every result, sends the broker a batched digest of MEDIUM/HIGH items via `notifyBrokerDigest`. |
-| `src/routes/webhook.js` | Execution dispatch refactored into a `brokerExecutors` table (`METATRADER`, `KITE_CONNECT`) instead of a single `if`; calls `notifyInvestorOfOrder` after every order outcome (filled or not); `KITE_CONNECT` now calls `placeProtectiveExit` right after entry and threads a `protectionWarning` through to the notification if it fails. |
-| `src/routes/research.js` | **New.** `GET /research/feed`, `POST /research/scan`. |
-| `src/routes/onboarding.js` | Accepts `riskRewardRatio`, `whatsappNumber`, `brokerWhatsappNumber`; new `PUT /onboarding/strategy/:id/algo-id`. |
-| `src/server.js` | Mounts `/research` behind `requireApiKey`. |
-| `package.json` | Added `twilio`, `@anthropic-ai/sdk`. |
-| `.env.example` | Documents `TWILIO_*`, `NEWS_API_KEY`, `NEWS_API_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_RESEARCH_MODEL`. |
-| `README.md` | Full rewrite of "what's built"/"what's not" to match the above; Setup section now says `migrate deploy`, not `migrate dev`. |
-| `prisma/migrations/20260831070121_add_take_profit_notifications_research_and_kite_protection/migration.sql` | **New — the actual migration**, generated by running `npx prisma migrate dev` for real against a local Postgres 16 instance (started in this sandbox: `service postgresql start`, `CREATE DATABASE waynetrade_dev`). Since this repo never had a prior migration checked in, this one migration creates the entire schema from nothing — not just this session's additions. |
+| **Risk engine** | Kill-switch, mandatory stop-loss, position sizing (pre-existing), plus new **auto profit-booking**: `computeTakeProfit()` — uses the signal's own `takeProfit` if sent, else computes it from the member's `riskRewardRatio` (default 2.0) and the stop-loss distance, else leaves it null. Verified: a real webhook produced `take_profit = 2575` for a real test case, exactly matching the formula. |
+| **Execution — MetaTrader** | `metaApiBridge.js`, pre-existing. |
+| **Execution — Zerodha equities** | `kiteConnectBridge.js`, new. Requires a `Strategy.algoId` before it will place anything (SEBI's algo-trading framework requires every order to carry an exchange-assigned Algo-ID). Also places a **protective GTT** (two-leg stop-loss + take-profit) right after entry, since Kite has no atomic "order + protection" call. |
+| **Layer 3 — transparency** | `notificationService.js` — persists every notification to the DB first, then best-effort sends via Twilio WhatsApp. Investor messages are always past-tense, never a forward-looking instruction (this phrasing is load-bearing for staying execution-only, not advice — see §5). |
+| **Layer 2 — AI research** | `researchAssistant.js` — pulls news, one Claude call per article producing bull/bear/risk-verdict, extracts a likely ticker, cross-checks it against Saaf Signal's `GET /signal/{ticker}` (stored as separate `technical*` fields, never blended into Layer 2's own confidence number), digests medium/high items to the broker. **Broker-API-key-gated only — never shown to a retail investor anywhere in the current frontend.** |
+| **Investor view tokens** | `Member.viewTokenHash` (SHA-256, shown once), a separate `requireViewToken` middleware, `/investor/*` routes. Verified: an admin API key does NOT work as a view token, and one member's token does NOT unlock another member's data. Self-service rotation exists (`POST /investor/:memberId/view-token/regenerate`). |
+| **Member removal** | Soft delete (`MemberStatus.REMOVED`), no hard deletes — matches the "permanent honest record" design. Intentionally, a removed member's view token still works (documented as intentional in `README.md`, not a bug). |
+| **Kite protection reconciliation** | `POST /ops/retry-unprotected-orders` — finds Kite orders that filled but never got a protective GTT, retries. Narrows the entry/GTT non-atomicity risk window; can't fully eliminate it (Kite has no atomic call for this). |
+| **Automated tests** | `npm test` — 18 passing tests (`node --test`, no extra dependency) covering the risk-engine math, view-token hashing, and both broker bridges' pre-flight validation. Scoped to pure logic only — no test-database/Prisma testing exists yet. |
+| **Database** | Full schema + one migration generated and actually run against a real local Postgres. **Never run against a real production database** — that's still open. |
+| **Docs** | `README.md` (routes table + honest "what's built/what's not"), `DEVELOPER_GUIDE.md` (full technical combination plan), `SAAF_TRADE_INVESTOR_OVERVIEW.md` (investor-facing PDF source), `BROKER_PARTNERSHIP_AND_COMPLIANCE_CHECKLIST.md`, `PRIVACY_POLICY_DRAFT.md`, `BROKER_OUTREACH_EMAIL.md`, `LAWYER_BRIEFING.md`, `RA_RIA_DECISION_SUPPORT.md` — see §5. |
 
-**This round went further than a syntax check.** After generating the
-migration, the server was actually started against the real migrated
-database and exercised through real HTTP calls: `POST /onboarding/group`,
-`POST /onboarding/group/:id/member` (with a risk profile,
-`riskRewardRatio: 2.5`), `POST /onboarding/group/:id/strategy`,
-`PUT /onboarding/strategy/:id/algo-id`, then a **correctly HMAC-signed**
-webhook signal (`stopLoss: 2400, price: 2450`) through
-`POST /webhook/:strategyId`. Confirmed by direct `psql` query against the
-resulting rows: `risk_decisions.take_profit` computed as exactly `2575`
-(2450 + (2450−2400)×2.5 — the auto profit-booking math, correct), the order
-correctly landed at `status = ERROR` (no real `KITE_API_KEY` in this
-sandbox, so `kiteConnectBridge.js` threw exactly as designed — not a false
-success), and the investor notification correctly recorded "NOT placed
-(status: ERROR)" with `whatsapp_status = SKIPPED_NOT_CONFIGURED` (no Twilio
-configured). This is real evidence the schema, Prisma client, risk engine,
-and notification service all agree with each other — still not evidence
-that MetaApi, Kite Connect, Twilio, or Anthropic themselves work, since
-none of those credentials exist in this environment.
+**Status:** branch `docs/saaf-trade-planning-docs` → PR #2 → **merged to
+`main`**.
 
-## 2. Not yet done — pick these up next
+### `waynetrade-frontend` — React 19 + Vite
 
-- **Kite Connect stop-loss/take-profit is now wired up (protective GTT),
-  but it's a second broker request, not one atomic call with the entry.**
-  If the entry succeeds and the GTT then fails — wrong trigger-price band,
-  Kite account has GTT disabled, network error — the position is open and
-  unprotected; `webhook.js` surfaces this to the investor immediately via
-  `protectionWarning`, but nothing auto-retries the GTT placement, and
-  there's no ops-facing alert beyond the investor's own WhatsApp/dashboard
-  message and a `console.error`. Whoever owns this next should decide
-  whether that's enough, or whether it needs a retry loop / broker-side
-  alert too. Also: the GTT's `last_price` comes from the signal's own
-  reference price, not a live Kite quote — could get rejected by Kite's own
-  price-band validation on a fast-moving stock, and this repo has no way to
-  detect that in advance.
-- **`riskRewardRatio` defaults to `2.0` for every new profile.** Still an
-  open product question from the original session: per-member (current) or
-  per-strategy default? Not decided.
-- **Layer 2 now cross-checks `forecast.py` — done, with real limits.**
-  `researchAssistant.js` extracts a ticker from the article via the same
-  Claude call (new `ticker` field in the analysis prompt), then calls
-  `saaf-signal-backend`'s `GET /signal/{ticker}` and stores its reading as
-  separate `technical*` columns on `ResearchSignal` — never blended with
-  Layer 2's own `confidenceTag` into one number. Verified: a mock server
-  matching `main.py`'s exact response shape round-trips correctly, and both
-  the unconfigured (`SAAF_SIGNAL_API_BASE` unset) and network-failure paths
-  return `null` cleanly rather than throwing. **Not verified:** against a
-  real running `saaf-signal-backend` (would need Python deps + a live
-  yfinance-backed data fetch, not available in this sandbox), and ticker
-  extraction is LLM-guessed — it can miss or misformat a ticker
-  `saaf-signal-backend`'s data source doesn't recognize.
-- **Stale as of §6 below — a real unit test suite now exists** (`test/`,
-  `npm test`, 18 passing tests). Still true: nothing touches Prisma/a live
-  DB (no test-database setup), and MetaApi, Kite Connect, Twilio, and
-  Anthropic have still never been exercised against real credentials —
-  only Postgres has had a real end-to-end run.
-- **Stale as of §5/§6 below — the frontend is no longer untouched.**
-  `waynetrade-frontend` now has full feature parity with this backend,
-  plus a separate investor view and cross-linking to `saaf-signal-frontend`.
-  What's still genuinely true: it remains two separate deployments (Saaf
-  Trade, Saaf Signal), not one merged product surface.
+Was already a real working dashboard before this project touched it
+(connect screen, group dashboard, kill-switch UI, audit trail, onboarding
+forms) — an earlier version of this handover wrongly called it "a
+near-empty scaffold," corrected once that was actually checked.
 
-## 3. Repos in play
+Added this project: Layer 2/3 UI (Transparency feed + Research assistant
+sections, both polling live), Algo-ID management per strategy,
+risk:reward-ratio + WhatsApp-number fields on member/group forms, a
+genuinely **separate investor view** (`#investor` hash route — own connect
+screen, own `localStorage` key, own fetch function using `X-View-Token`
+that can never send `X-Api-Key` by accident, no kill-switch/onboarding
+controls anywhere in this half of the app), member removal + self-service
+token rotation in the UI.
 
-All under the `Wayneesolutions` GitHub org:
+Verified with a real headless-browser (Playwright) run against the real
+backend + Postgres, including actually submitting forms and confirming the
+resulting rows via `psql` — not just a build check.
 
-- `waynetrade-backend` — this repo, push access, changes above live here.
-- `waynetrade-frontend` — push access. **Correction to an earlier version
-  of this doc**: this was wrongly assessed as "a near-empty React
-  scaffold" — it was not. `App.jsx` already had a working connect screen,
-  group dashboard, kill-switch UI (with required-reason prompts), per-
-  member audit trail, and onboarding forms (add member/strategy) before
-  this session touched it. This session added the missing pieces: Layer
-  2/3 UI (Transparency feed + Research assistant sections), Algo-ID
-  management per strategy, and risk:reward-ratio/WhatsApp-number fields on
-  the member/group forms — see that repo's own PR
-  (`feature/layer2-3-and-algo-id-ui`) for the full change list and how it
-  was verified (a real headless-browser run against a real backend +
-  Postgres, including actually submitting the Add Member form and
-  confirming the values landed correctly via `psql`, not just a build
-  check). Still open there: it's one shared broker/admin view, no separate
-  investor-facing dashboard, and not combined with `saaf-signal-frontend`.
-- `saaf-signal-backend` / `saaf-signal-frontend` — public, read-only access
-  this session (not attached with push credentials). If build work moves
-  into these repos, `add_repo` with `access: "push"` first.
+**Status:** branch `feature/layer2-3-and-algo-id-ui` → PR #2 → **merged to
+`main`**.
 
-**Unresolved thread:** both `waynetrade-backend`'s and
-`waynetrade-frontend`'s READMEs claim they're merged into
-`arpanwayne/saaf-signal-backend` / `arpanwayne/saaf-signal-frontend` and no
-longer developed. That owner/repo was not reachable or verified in this
-session — unclear if it's real, stale, or a different person's fork. Worth
-checking directly with whoever wrote that banner before assuming either
-repo set is the current source of truth.
+### `saaf-signal-frontend` — static HTML/CSS/JS, no build step
 
-## 4. Context a next session won't have
+Added: an optional `SAAF_TRADE_INVESTOR_URL` config field that, when set,
+adds a "Your Saaf Trade account ↗" nav link on the watchlist/track-record/
+chat pages. Verified as a genuine no-op when unconfigured (not just
+visually hidden).
 
-- The product's actual differentiator, per the product owner's own framing
-  this session: **not** "guaranteed returns" (explicitly corrected during
-  this session — that framing is both false and a SEBI compliance
-  violation) but **less manual effort + full transparency to the investor +
-  less research burden on the broker**. Keep this framing in any investor-
-  or user-facing copy.
-- Target audience is explicitly Gen Z / new investors — but the SEBI
-  research surfaced this session flags a real tension: regulators are wary
-  of "gamified," oversimplified trading apps that reduce *understanding*
-  along with effort. The safe version discussed: automate the *doing*, not
-  the *knowing* — pair every automated action with a plain-language
-  explanation (this is what Layer 3 is for).
-- See `docs/SAAF_TRADE_INVESTOR_OVERVIEW.md` for the feature list drafted
-  for an investor-facing PDF, and `docs/DEVELOPER_GUIDE.md` for the full
-  technical combination plan.
+This is **cross-linking, not a merge** — two separate deployments, two
+design systems, connected by plain links. A true single-product-surface
+merge is still not done (see §4).
 
-## 5. This round's additions: investor view, cross-linking, compliance checklist
+**Status:** branch `feature/link-saaf-trade-investor-view` → PR #1 →
+**merged to `main`**.
 
-- **Investor view tokens** (`waynetrade-backend`): `Member.viewTokenHash`
-  (SHA-256, one-way, plaintext shown once at creation or regeneration) plus
-  three new `GET /investor/:memberId/*` routes, protected by a NEW
-  middleware (`requireViewToken`) — completely separate from
-  `requireApiKey`. Verified for real, including the two checks that
-  actually matter for a feature like this: the admin API key does **not**
-  work as a view token (401), and one member's token does **not** unlock
-  another member's data (401) — both confirmed against the real local
-  Postgres via direct `curl` calls, not assumed from reading the code.
-- **Investor view UI** (`waynetrade-frontend`): a hash-routed `#investor`
-  app (own connect screen, own `localStorage` key, own fetch function that
-  sends `X-View-Token` and can never accidentally send `X-Api-Key`).
-  Renders only that member's own risk settings/orders/notifications/audit
-  trail — no kill-switch or onboarding control appears anywhere in this
-  part of the UI, as a second layer on top of the backend's own
-  enforcement. Verified with a real headless-browser run against real data
-  from a pre-existing member (regenerated a token for it via the new
-  backend endpoint) — screenshots show real historical order/notification/
-  audit data, correctly scoped.
-- **Cross-linking, both directions**: `waynetrade-frontend`'s investor view
-  can link out to a configured Saaf Signal URL; `saaf-signal-frontend` (this
-  session got `access: "push"` on it via `add_repo`, previously read-only)
-  now has a matching optional `SAAF_TRADE_INVESTOR_URL` config field that
-  adds a nav link when set. Both verified as genuine no-ops when
-  unconfigured, not just visually hidden. **This is cross-linking, not a
-  merge** — two separate deployments, two design systems, connected by
-  plain external links. The bigger "one product surface" effort is still
-  not done — see `DEVELOPER_GUIDE.md` §7 item 8's update.
-- **`docs/BROKER_PARTNERSHIP_AND_COMPLIANCE_CHECKLIST.md`** (new file):
-  ordered steps for broker empanelment and RA/RIA registration, plus a
-  genuinely new finding — **the DPDP Act 2023 (India's data protection law)
-  applies to this codebase today**, independent of any broker relationship,
-  because it already stores members' WhatsApp numbers and generates
-  personal-financial messages to them, with no privacy policy or retention
-  policy anywhere yet. This is a document for the team to act on with real
-  legal counsel, not a task this session could mark "done" in the sense
-  code gets marked done — flagged explicitly as such in the document itself.
+### `saaf-signal-backend` — Python FastAPI + SQLite
 
-### Not yet done, from this round specifically
+Never modified this project — read-only, used to confirm the exact shape
+of `GET /signal/{ticker}` so Layer 2 could cross-check against it
+correctly. Its `/signal`, `/predict`, `/screener/scan` endpoints are public
+and return a directional call with a confidence score — this is the basis
+of the RA/RIA finding in §5.
 
-- View tokens have no expiry (self-service rotation now exists — see §6
-  below — but a token that's never rotated is valid forever).
-- The Saaf Signal cross-link is a single global URL per browser
-  (`localStorage`, prompted once) — not fetched from any backend config, so
-  it has to be set again if browser storage is cleared.
-- The compliance checklist's SEBI-framework specifics (registration
-  requirements, deposit amounts, timelines) are time-sensitive and already
-  noted in the document itself as needing verification against SEBI's
-  current circulars before anyone acts on a specific number.
+---
 
-## 6. Final round: closing the remaining code-shaped gaps
+## 3. Everything that's real vs. everything that's still simulated
 
-After the round in §5, the product owner asked for everything still
-genuinely closeable by code to actually get closed, one by one. What
-happened:
+Be precise about this with anyone evaluating the project — it matters:
 
-- **Self-service view-token rotation** — `POST
-  /investor/:memberId/view-token/regenerate`, authenticated by the
-  investor's own current token (not admin-only anymore). Verified: old
-  token dies immediately, new one works immediately, frontend updates its
-  stored connection so the session doesn't need a fresh login.
-- **Member removal** — `DELETE /onboarding/member/:memberId` (soft delete
-  to `REMOVED`), plus a "Remove" action in `waynetrade-frontend`'s
-  `MemberRow`. Verified end-to-end against the real Postgres. **Found and
-  documented, not fixed, because it's correct as-is**: a removed member's
-  view token still works — this preserves the "honest, permanent record"
-  design the rest of the platform follows, so it's called out in
-  README.md's Security notes as intentional, not left ambiguous for a
-  future session to "fix" into a bug.
-- **Unprotected-Kite-order reconciliation** — `POST
-  /ops/retry-unprotected-orders` (new `src/services/reconciliation.js` +
-  `src/routes/ops.js`). Verified against the real Postgres by manually
-  simulating the exact failure state (an order `SENT` with no
-  `protectiveTriggerRef`) and confirming the job found it, correctly
-  excluded non-Kite orders, and re-found it on a second run (idempotent).
-  This narrows the entry/GTT non-atomicity risk window; it does not and
-  cannot fully eliminate it — that would require Kite Connect itself
-  offering an atomic "order + protection" call, which it doesn't.
-- **A real test suite** — `test/`, 18 passing tests via `node --test` (no
-  new dependency), covering `computeTakeProfit`, the view-token
-  hash/generate helpers, and both broker bridges' pre-flight validation.
-  Deliberately scoped to pure logic — no test-database setup exists, so
-  nothing here touches Prisma or a live DB.
-- **`docs/PRIVACY_POLICY_DRAFT.md`** — grounded in the actual schema, not
-  a generic template. Surfaces two real product gaps needing a human
-  decision: no consent-capture step, no retention/deletion policy.
+**Real, verified in this sandbox:**
+- Local Postgres 16, full schema + migration, real HTTP round-trips
+- Prisma client ↔ schema agreement
+- Risk-engine math (profit-booking, stop-loss)
+- View-token auth isolation (cross-member 401s, admin-key rejection)
+- Frontend forms → backend → DB, checked via `psql`
+- Reconciliation job against a manually simulated failure state
 
-**What was explicitly NOT attempted, and why**: actual broker outreach,
-actually engaging a lawyer, and the RA/RIA registration decision itself.
-These require a human contacting another human and are not code tasks —
-attempting to "complete" them in this session would have meant either
-fabricating a fake outcome or silently skipping the request, and the more
-honest move was to say so directly (which happened in-conversation) rather
-than let a docs file imply otherwise.
+**Never exercised against anything real:**
+- MetaApi (no real token)
+- Kite Connect (no real API key/secret — this closes the single biggest
+  gap: whether `placeOrder`/`placeProtectiveExit` actually work against a
+  live or sandbox Zerodha account has never been tested)
+- Twilio (no real account — WhatsApp sending has only ever hit the
+  "not configured, skipped" path)
+- Anthropic (no real API key — the Layer 2 research prompt has never
+  actually been sent to Claude)
+- Any production Postgres/Neon instance
+
+None of this is fabricated as "done" anywhere in the docs — every doc that
+touches these says so explicitly, on purpose.
+
+---
+
+## 4. What's left, technically
+
+- **Kite protective GTT is not atomic with entry** — mitigated by the
+  reconciliation job, not eliminated. Would need Kite Connect itself to
+  offer a combined call, which it doesn't.
+- **`riskRewardRatio` default (2.0) is per-member, not per-strategy** —
+  open product decision, not decided yet.
+- **View tokens have no expiry** — rotation is self-service now, but a
+  token that's never rotated is valid forever.
+- **No test-database setup** — the 18 tests are pure-logic only, nothing
+  exercises Prisma/a live DB automatically.
+- **Ticker extraction in Layer 2 is LLM-guessed** — can miss or misformat
+  a ticker Saaf Signal's data source doesn't recognize.
+- **`saaf-signal-frontend`/`-backend` are still separate deployments**,
+  not one merged product surface with `waynetrade-frontend` — only
+  cross-linked.
+- **No retention/deletion policy implemented** — every table grows
+  forever; flagged in `PRIVACY_POLICY_DRAFT.md` as an open gap.
+- **No consent-capture step** before an admin enters a member's WhatsApp
+  number/data — also flagged in the privacy draft.
+- **Never run against real credentials** for any of MetaApi, Kite Connect,
+  Twilio, or Anthropic — see §3.
+- **Unresolved thread**: both backend and frontend READMEs mention a
+  claimed merge into `arpanwayne/saaf-signal-backend`/`-frontend` — that
+  owner/repo was never reached or verified. Worth checking directly before
+  assuming which repo set is the real source of truth.
+
+## 5. What's left, business/legal — and what's already drafted for it
+
+These are **not code tasks** — they need a human talking to another human.
+Three documents were drafted this project to make that easier, but none
+of them can be "sent" by me — no email tool is connected to this session,
+so you'll need to send them yourself (or connect Gmail for a future
+session to send them):
+
+| Task | Document ready to use |
+|---|---|
+| Contact a broker (Zerodha, to start — Kite Connect is what's built) | `docs/BROKER_OUTREACH_EMAIL.md` — fill in the brackets, send from an actual signatory |
+| Brief a securities/fintech lawyer | `docs/LAWYER_BRIEFING.md` — bundles the other docs below, plus specific questions on RA/RIA, DPDP, broker-agreement liability, guaranteed-returns language |
+| Decide RA/RIA registration | `docs/RA_RIA_DECISION_SUPPORT.md` — **the one finding worth reading first**: Saaf Signal's own `/signal`, `/predict`, `/screener/scan` endpoints already look advisory-shaped (public, directional call + confidence score, logged as a track record) — independent of anything in Saaf Trade's execution side, which stays execution-only as long as Layer 2 stays broker-facing. Two paths laid out: register (Path A) or restructure Saaf Signal to be broker-facing only, reusing the pattern Layer 2 already uses (Path B, our lean as the faster path, but a lawyer's call) |
+| Finalize a privacy policy | `docs/PRIVACY_POLICY_DRAFT.md` — grounded in the actual schema, flags the two gaps in §4 above |
+| Full ordered checklist (broker empanelment + RA/RIA + DPDP) | `docs/BROKER_PARTNERSHIP_AND_COMPLIANCE_CHECKLIST.md` |
+
+**Suggested order:** lawyer first (send the briefing) → get their RA/RIA
+read → resolve the privacy policy in parallel → approach the broker →
+sandbox integration test with real Kite credentials → only then real
+capital.
+
+---
+
+## 6. If you're picking this up next
+
+1. Read this file, then `README.md` in `waynetrade-backend` for the exact
+   routes/features table.
+2. `DEVELOPER_GUIDE.md` has the full original technical combination plan
+   if you need the "why" behind any architectural choice.
+3. The single highest-value next technical step is closing the biggest
+   "never verified" gap: get real Kite Connect sandbox credentials and run
+   one real signal → order → protective-GTT cycle end to end.
+4. The single highest-value next business step is sending
+   `LAWYER_BRIEFING.md` — the RA/RIA answer it's asking for can change the
+   product roadmap (Path A vs. Path B in §5), so it's worth getting before
+   investing more in either direction.
