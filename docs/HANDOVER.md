@@ -91,15 +91,16 @@ none of those credentials exist in this environment.
   yfinance-backed data fetch, not available in this sandbox), and ticker
   extraction is LLM-guessed — it can miss or misformat a ticker
   `saaf-signal-backend`'s data source doesn't recognize.
-- **No automated tests committed to the repo.** The end-to-end run above
-  proved the schema/app/risk-engine/notification path works against a real
-  Postgres instance, but it was a manual `curl` session in this sandbox, not
-  a test suite anyone can re-run. Worth turning into real integration tests
-  before this grows further. Also: Postgres was real, but MetaApi, Kite
-  Connect, Twilio, and Anthropic were still not — none of those four
-  external integrations have been exercised against real credentials at all.
-- **Unified frontend** — still not started. Both frontends remain
-  untouched this session.
+- **Stale as of §6 below — a real unit test suite now exists** (`test/`,
+  `npm test`, 18 passing tests). Still true: nothing touches Prisma/a live
+  DB (no test-database setup), and MetaApi, Kite Connect, Twilio, and
+  Anthropic have still never been exercised against real credentials —
+  only Postgres has had a real end-to-end run.
+- **Stale as of §5/§6 below — the frontend is no longer untouched.**
+  `waynetrade-frontend` now has full feature parity with this backend,
+  plus a separate investor view and cross-linking to `saaf-signal-frontend`.
+  What's still genuinely true: it remains two separate deployments (Saaf
+  Trade, Saaf Signal), not one merged product surface.
 
 ## 3. Repos in play
 
