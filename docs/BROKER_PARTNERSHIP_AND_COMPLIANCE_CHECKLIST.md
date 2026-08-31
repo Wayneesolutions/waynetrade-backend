@@ -165,15 +165,23 @@ If it does apply:
 ## Suggested order of operations
 
 1. Engage a securities lawyer — before, not after, any broker conversation.
-   Bring them `SAAF_TRADE_INVESTOR_OVERVIEW.md` and this document.
+   Send them `docs/LAWYER_BRIEFING.md`, which bundles this document,
+   `SAAF_TRADE_INVESTOR_OVERVIEW.md`, `PRIVACY_POLICY_DRAFT.md`, and
+   `RA_RIA_DECISION_SUPPORT.md` into one briefing with specific questions.
 2. Get their read on Track 2 (RA/RIA) applicability now, while the product
-   is still small — cheaper to adjust the design than to retrofit registration.
+   is still small — cheaper to adjust the design than to retrofit
+   registration. `docs/RA_RIA_DECISION_SUPPORT.md` has our own feature-by-
+   feature read to start from, including one finding worth their attention
+   specifically: Saaf Signal's existing `/signal` and `/predict` endpoints
+   already look advisory-shaped as built (public, directional calls with a
+   confidence score) — separate from anything in Saaf Trade's execution layer.
 3. Get the lawyer's review of `docs/PRIVACY_POLICY_DRAFT.md` (Track 3,
    draft already written) — resolve its two open product gaps (consent
    capture, retention policy) and publish the real version. Doesn't block
    on the broker conversation and can run in parallel with it.
-4. Approach one broker (Step 0-1 above) for equities, using the technical
-   package that already exists.
+4. Approach one broker (Step 0-1 above) for equities, using
+   `docs/BROKER_OUTREACH_EMAIL.md` as a starting template — fill in the
+   specifics and send from an actual signatory, not a generic address.
 5. Sandbox integration test (Step 4) — this is also where the single
    biggest technical honest-gap (never run against a real account) finally
    gets closed.
