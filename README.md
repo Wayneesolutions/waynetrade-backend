@@ -8,15 +8,18 @@
 Group algo-trading command center. Backend for signal ingestion, risk engine,
 kill-switch, and audit logging, per `WayneTrade_Developer_Guide.docx`.
 
-Scope, updated 2026-08-31: Forex/Crypto via MetaTrader **and** Indian
+Scope, updated 2026-09-01: Forex/Crypto via MetaTrader **and** Indian
 equities via Kite Connect, per-member fixed position sizing, hard
 stop-loss, auto profit-booking, SEBI Algo-ID tagging on equities orders,
 manual kill-switch, admin API-key auth, real-time WhatsApp/dashboard trade
-notifications (Layer 3), and a broker-facing AI research assistant
-(Layer 2). See `docs/DEVELOPER_GUIDE.md` for the full combined-product plan
-this backend is one piece of (branded **Saaf Trade**). Backtesting,
-billing, and multi-group scale are still not built — see "What is NOT
-built" below.
+notifications (Layer 3), a broker-facing AI research assistant (Layer 2),
+and — new this update — **Saaf Signal's forecast engine, absorbed
+in-process** rather than a separate deployment (`src/services/forecastEngine/`,
+`src/routes/signal.js`). This is now the single backend for the whole
+product branded **Saaf Trade**; `waynetrade-frontend` is the single
+frontend. See `docs/DEVELOPER_GUIDE.md` for the original combination plan
+and `docs/HANDOVER.md` for what's changed since. Backtesting, billing, and
+multi-group scale are still not built — see "What is NOT built" below.
 
 ## What's actually built
 
@@ -85,15 +88,24 @@ built" below.
   `GET /research/feed` is the broker-facing dashboard feed. No in-process
   scheduler — an external cron must hit `/research/scan` periodically, same
   pattern as `saaf-signal-backend`'s `scheduler.py`.
-- **New: Layer 2 cross-checks the Saaf Signal forecast engine.** When an
-  article names a resolvable ticker, `researchAssistant.js` calls
-  `saaf-signal-backend`'s read-only `GET /signal/{ticker}` (set
-  `SAAF_SIGNAL_API_BASE`) and stores its `technical_direction`/
-  `technical_confidence`/`n_samples`/`reliability_tier` alongside — never
-  blended into — Layer 2's own `confidenceTag`. Two different questions
-  ("does this news matter" vs. "does history favor this direction"), shown
-  as two separate readings, on purpose. Optional: unset, or a failed
-  lookup, just skips those columns, never blocks the news-only analysis.
+- **New: the Saaf Signal forecast engine is absorbed in-process** —
+  formerly a separate `saaf-signal-backend` service, now
+  `src/services/forecastEngine/` in this repo (ported line-for-line from
+  its Python original: `data.js`, `indicators.js`, `forecast.js`,
+  `outcomes.js`, `screener.js`, `plainEnglish.js`, `newsEvents.js`), with
+  its own Prisma models (`ForecastPrediction`, `ForecastWatchlistItem`) in
+  this same database. Public, unauthenticated routes at `GET
+  /signal/:ticker`, `POST /predict/:ticker`, `GET /track-record`, `GET
+  /watchlist` + `POST`/`DELETE`, `GET /screener/scan`, `POST
+  /scan-watchlist`, `GET /predict/:ticker/event` — see `src/routes/signal.js`.
+  Pulls OHLCV history from Yahoo Finance via `yahoo-finance2` (no API key).
+  Layer 2's own cross-check (`researchAssistant.js`'s `fetchForecastSignal`)
+  now calls this in-process instead of over HTTP — same "two separate
+  readings, never blended" behavior as before, just no network hop.
+  **Deliberately still public, not behind `requireApiKey`** — matches the
+  original standalone service's design, and is the exact finding flagged
+  in `docs/RA_RIA_DECISION_SUPPORT.md`; moving the code in-process doesn't
+  change that finding.
 - **New: investor-only view tokens** (`src/services/viewToken.js`,
   `src/middleware/requireViewToken.js`, `src/routes/investor.js`) — every
   member gets a per-member view token at creation (SHA-256-hashed at rest,
@@ -198,6 +210,21 @@ built" below.
 - **Layer 2 news source is a placeholder shape.** `NEWS_API_BASE_URL`
   defaults to a generic NewsAPI.org-style endpoint — no licensed
   India-specific market news source is wired up yet.
+- **The forecast engine's data fetch (`forecastEngine/data.js`, Yahoo
+  Finance via `yahoo-finance2`) has never made a real network call in this
+  codebase's own development sandbox** — that sandbox's egress proxy
+  blocks `query1/query2.finance.yahoo.com` outright (same organization
+  policy that also blocks Render/Vercel API calls from there). The math in
+  `indicators.js`/`forecast.js` is unit-tested against synthetic OHLCV
+  fixtures (`test/forecastEngine.*.test.js`) and the routes were verified
+  end-to-end against a real Postgres for everything that doesn't need
+  market data (watchlist CRUD, track-record, error handling on a failed
+  fetch) — but nobody has yet confirmed a real ticker returns a sane
+  forecast from a normal internet connection. Do that once this is
+  deployed somewhere without the block. The `newsEvents.js` (event/news
+  layer, `GET /predict/:ticker/event`) is in the same boat — RSS feed
+  fetches and the Anthropic call are both untested here for the same
+  reason.
 - **A real test suite now exists** (`test/`, `npm test`, Node's built-in
   test runner — no new dependency) covering the risk engine's
   take-profit math, the view-token hash/generate helpers, and both broker
@@ -286,6 +313,27 @@ npm run generate-secret
 | POST | `/investor/:memberId/view-token/regenerate` | `X-View-Token` (current) | Self-service token rotation — an investor who still has a working token can replace it themselves, no admin needed |
 | DELETE | `/onboarding/member/:memberId` | `X-Api-Key` | Removes a member (status → `REMOVED`, soft delete) — more permanent than kill-switch pause, no "un-remove" route |
 | POST | `/ops/retry-unprotected-orders` | `X-Api-Key` | Retries the protective GTT for any Kite Connect order that's `SENT` but still has no `protectiveTriggerRef` — meant for an external cron, same pattern as `/research/scan` |
+| GET | `/signal/:ticker` | none (public) | Saaf Signal forecast engine — read-only current signal, never logs a tracked call |
+| GET | `/signal/:ticker/explain` | none (public) | Same as above, plain-English answer |
+| POST | `/predict/:ticker` | none (public) | Runs the forecast and logs it as a permanent, trackable prediction row |
+| POST | `/predict/:ticker/explain` | none (public) | Same as above, plain-English answer |
+| GET | `/predict/:ticker/event` | none (public) | News/event layer for one ticker — requires `ANTHROPIC_API_KEY` |
+| GET | `/track-record` | none (public) | Aggregate hit/miss accuracy stats (`?ticker=` to scope to one) |
+| GET | `/predictions` | none (public) | Recent logged predictions (`?ticker=`, `?limit=`) |
+| POST | `/check-outcomes` | none (public) | Verifies matured predictions against real outcomes — meant for an external cron |
+| GET | `/watchlist` | none (public) | List watched tickers |
+| POST | `/watchlist/:ticker` | none (public) | Add a ticker to the watchlist |
+| DELETE | `/watchlist/:ticker` | none (public) | Remove a ticker |
+| GET | `/screener/scan` | none (public) | Scans the default universe for notable signals (`?minConfidence=`) |
+| GET | `/screener/universe` | none (public) | The default ticker universe the screener scans |
+| POST | `/scan-watchlist` | none (public) | Runs predictions across the whole watchlist in one call, returns which crossed each item's alert threshold |
+
+The `/signal`, `/predict`, `/watchlist`, `/screener`, `/track-record`,
+`/predictions`, `/check-outcomes`, and `/scan-watchlist` routes are Saaf
+Signal's forecast engine, absorbed in-process — see
+`src/routes/signal.js` and `src/services/forecastEngine/`. They're
+intentionally public/unauthenticated, matching the original standalone
+service; see `docs/RA_RIA_DECISION_SUPPORT.md` before changing that.
 
 ## Security notes
 

@@ -134,6 +134,8 @@ Be precise about this with anyone evaluating the project — it matters:
 - Anthropic (no real API key — the Layer 2 research prompt has never
   actually been sent to Claude)
 - Any production Postgres/Neon instance
+- Yahoo Finance (the forecast engine's data source — see §6a, blocked by
+  this sandbox's own egress proxy)
 
 None of this is fabricated as "done" anywhere in the docs — every doc that
 touches these says so explicitly, on purpose.
@@ -153,9 +155,10 @@ touches these says so explicitly, on purpose.
   exercises Prisma/a live DB automatically.
 - **Ticker extraction in Layer 2 is LLM-guessed** — can miss or misformat
   a ticker Saaf Signal's data source doesn't recognize.
-- **`saaf-signal-frontend`/`-backend` are still separate deployments**,
-  not one merged product surface with `waynetrade-frontend` — only
-  cross-linked.
+- ~~`saaf-signal-frontend`/`-backend` are still separate deployments~~ —
+  **done as of §6a**: the forecast engine is now absorbed in-process into
+  `waynetrade-backend`/`-frontend`. The old `saaf-signal-*` repos are
+  legacy, not the current source for this functionality.
 - **No retention/deletion policy implemented** — every table grows
   forever; flagged in `PRIVACY_POLICY_DRAFT.md` as an open gap.
 - **No consent-capture step** before an admin enters a member's WhatsApp
@@ -189,6 +192,51 @@ sandbox integration test with real Kite credentials → only then real
 capital.
 
 ---
+
+## 6a. Update (2026-09-01): Saaf Signal is now a real in-process merge, not just a cross-link
+
+The earlier "cross-linking, not a merge" status below is now out of date
+for the forecast engine specifically. Saaf Signal's Python backend
+(`data.py`, `indicators.py`, `forecast.py`, `outcomes.py`, `screener.py`,
+`plain_english.py`, `news_events.py` — 999 lines) has been ported line-for-
+line into `waynetrade-backend/src/services/forecastEngine/`, with its own
+Prisma models (`ForecastPrediction`, `ForecastWatchlistItem`) in the same
+Postgres database, exposed at public routes (`/signal`, `/predict`,
+`/watchlist`, `/screener`, `/track-record`, `/check-outcomes`,
+`/scan-watchlist` — see `src/routes/signal.js`). Layer 2's own cross-check
+now calls this in-process instead of over HTTP.
+
+`waynetrade-frontend` got a matching `SignalSection`
+(`src/SignalApp.jsx`) — a ticker checker (plain-English + technical
+views), a permanent Truth Board, and a watchlist — mounted in the broker
+dashboard only (see `docs/RA_RIA_DECISION_SUPPORT.md` for why not the
+investor view).
+
+**Result: one backend repo, one frontend repo** for the whole product —
+`waynetrade-backend` and `waynetrade-frontend` — matching what
+`docs/SAAF_TRADE_INVESTOR_OVERVIEW.md` already described as built
+("a unified client + broker dashboard"). `saaf-signal-backend` and
+`saaf-signal-frontend` are now legacy — their code isn't deleted, but new
+work should happen in the two repos above.
+
+What's real about this vs. what isn't yet:
+
+- **Real**: the whole port was unit-tested against synthetic OHLCV fixtures
+  (`test/forecastEngine.*.test.js`, all passing, math checked by hand for
+  RSI/EMA/backtest sample cases), and verified end-to-end against a real
+  local Postgres via real HTTP calls — watchlist add/remove, track-record,
+  error handling on a failed data fetch, all confirmed via `psql` and a
+  real Playwright browser run against the real frontend.
+- **Not yet real**: the actual forecast math has never run against a real
+  ticker's real market data. This sandbox's egress proxy blocks
+  `query1/query2.finance.yahoo.com` outright — same policy that blocks
+  Render/Vercel API calls from here (confirmed separately, see the
+  deployment-troubleshooting portion of this session's chat history if
+  picking this up mid-deploy). `newsEvents.js` (the `/predict/:ticker/event`
+  route) has the same untested status for its RSS feed + Anthropic call.
+  **First thing to do once this is deployed somewhere with normal
+  internet access: hit `GET /signal/RELIANCE.NS` and sanity-check the
+  response.**
 
 ## 6. If you're picking this up next
 
