@@ -266,6 +266,56 @@ enum NotificationDeliveryStatus {
   SKIPPED_NOT_CONFIGURED
 }
 
+// Saaf Signal forecast engine — absorbed in-process from the formerly
+// standalone saaf-signal-backend (see docs/HANDOVER.md). One row = one
+// forecast made at one point in time for one ticker. The prediction fields
+// are frozen at creation and never rewritten after the fact — only the
+// outcome_* fields get filled in later, by the outcome checker, once
+// target_date has passed. This table is the whole honesty mechanism behind
+// the forecast engine's confidence numbers: they're historical hit rates,
+// checkable against this permanent record, not invented.
+model ForecastPrediction {
+  id        String   @id @default(uuid())
+  ticker    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  priceAtPrediction   Decimal @map("price_at_prediction") @db.Decimal(18, 4)
+  technicalDirection  String  @map("technical_direction") // bullish | bearish | neutral
+  technicalConfidence Decimal @map("technical_confidence") @db.Decimal(5, 2)
+  technicalBasis      String  @map("technical_basis")
+  nSamples            Int?    @map("n_samples")
+  predictedLow        Decimal @map("predicted_low") @db.Decimal(18, 4)
+  predictedHigh       Decimal @map("predicted_high") @db.Decimal(18, 4)
+  horizonDays         Int     @default(5) @map("horizon_days")
+
+  // Event/news signal (optional, filled separately via the news-events
+  // layer) — kept as separate columns from the technical_* fields above,
+  // same "never blend two different kinds of evidence into one number"
+  // rule the rest of this codebase follows (see ResearchSignal above).
+  eventSummary         String? @map("event_summary")
+  eventDirection       String? @map("event_direction")
+  eventConfidenceLabel String? @map("event_confidence_label")
+
+  targetDate       DateTime @map("target_date")
+  outcomeChecked   Boolean  @default(false) @map("outcome_checked")
+  actualPrice      Decimal? @map("actual_price") @db.Decimal(18, 4)
+  directionCorrect Boolean? @map("direction_correct")
+  priceErrorPct    Decimal? @map("price_error_pct") @db.Decimal(10, 4)
+
+  @@index([ticker])
+  @@map("forecast_predictions")
+}
+
+model ForecastWatchlistItem {
+  id             String   @id @default(uuid())
+  ticker         String   @unique
+  displayName    String?  @map("display_name")
+  alertThreshold Decimal  @default(65.0) @map("alert_threshold") @db.Decimal(5, 2)
+  addedAt        DateTime @default(now()) @map("added_at")
+
+  @@map("forecast_watchlist_items")
+}
+
 model KillSwitchEvent {
   id          String   @id @default(uuid())
   memberId    String?  @map("member_id")

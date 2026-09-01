@@ -11,6 +11,7 @@ const onboardingRoutes = require("./routes/onboarding");
 const researchRoutes = require("./routes/research");
 const investorRoutes = require("./routes/investor");
 const opsRoutes = require("./routes/ops");
+const signalRoutes = require("./routes/signal");
 const { requireApiKey } = require("./middleware/requireApiKey");
 
 const app = express();
@@ -51,6 +52,10 @@ app.use("/onboarding", requireApiKey, onboardingRoutes);
 app.use("/research", requireApiKey, researchRoutes);
 app.use("/investor", investorLimiter, investorRoutes);
 app.use("/ops", requireApiKey, opsRoutes);
+// Saaf Signal's forecast engine — absorbed in-process (see docs/HANDOVER.md).
+// No requireApiKey, matching the original standalone service: these were
+// always public read/predict endpoints, not broker-gated.
+app.use("/", signalRoutes);
 
 // Central error handler — never leak stack traces to clients.
 app.use((err, req, res, next) => {

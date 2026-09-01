@@ -25,7 +25,9 @@
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
-    "twilio": "^6.1.0"
+    "rss-parser": "^3.13.0",
+    "twilio": "^6.1.0",
+    "yahoo-finance2": "^4.0.2"
   },
   "devDependencies": {
     "prisma": "^5.19.0"

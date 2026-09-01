@@ -2,6 +2,8 @@ const axios = require("axios");
 const Anthropic = require("@anthropic-ai/sdk");
 const prisma = require("../db/prisma");
 const { notifyBrokerDigest } = require("./notificationService");
+const { fetchHistory } = require("./forecastEngine/data");
+const { generateForecast } = require("./forecastEngine/forecast");
 
 /**
  * Layer 2 — AI research assistant for the broker. Continuous (per scan
@@ -18,10 +20,12 @@ const { notifyBrokerDigest } = require("./notificationService");
  * true multi-call multi-agent debate is future work if this proves too
  * blunt in practice.
  *
- * UNIFIED with saaf-signal-backend's forecast engine, but not merged into
- * it: when an article names a specific, resolvable ticker, this module
- * calls that service's read-only `GET /signal/{ticker}` (safe to call
- * anytime, never logs a tracked prediction — see that repo's main.py) and
+ * ABSORBS Saaf Signal's forecast engine in-process (see
+ * src/services/forecastEngine/, docs/HANDOVER.md) — formerly a separate
+ * saaf-signal-backend service reached over HTTP, now a direct in-process
+ * call: when an article names a specific, resolvable ticker, this module
+ * calls that engine's read-only forecast function (safe to call anytime,
+ * never logs a tracked prediction — see forecastEngine/forecast.js) and
  * stores its technical_confidence/technical_direction/n_samples alongside
  * this module's own news-based confidenceTag, as separate fields, never
  * blended into one number. The two engines answer different questions —
@@ -29,8 +33,7 @@ const { notifyBrokerDigest } = require("./notificationService");
  * showing both, explicitly separate, is more honest than pretending
  * there's one true confidence score. See `fetchForecastSignal` below.
  *
- * HONEST GAPS — not run against a real news feed, Anthropic account, or a
- * live saaf-signal-backend deployment yet:
+ * HONEST GAPS — not run against a real news feed or Anthropic account yet:
  *   1. No in-process scheduler. This module is meant to be triggered by an
  *      external cron hitting POST /research/scan (see src/routes/research.js)
  *      — same pattern as saaf-signal-backend's scheduler.py hitting
@@ -46,19 +49,19 @@ const { notifyBrokerDigest } = require("./notificationService");
  *      pageSize on a busy news day means that many LLM calls, unmetered.
  *   4. Ticker extraction is LLM-guessed from the article text (e.g.
  *      "Reliance" -> "RELIANCE.NS") — it can miss, guess the wrong listed
- *      entity, or format it in a way saaf-signal-backend's data source
- *      (yfinance-style tickers, per that repo's README) doesn't recognize.
- *      A failed/unresolved lookup just means the row has no technical_*
- *      fields — never blocks the news-only analysis from being saved.
- *   5. SAAF_SIGNAL_API_BASE unset = the cross-check is silently skipped for
- *      every article, not an error — same "optional enrichment, not a hard
- *      dependency" posture as the rest of this module's external calls.
+ *      entity, or format it in a way the forecast engine's data source
+ *      (Yahoo Finance-style tickers) doesn't recognize. A failed/
+ *      unresolved lookup just means the row has no technical_* fields —
+ *      never blocks the news-only analysis from being saved.
+ *   5. The forecast engine's own data fetch (Yahoo Finance) can fail
+ *      independently of everything else here — same "optional enrichment,
+ *      not a hard dependency" posture: a failure just means null
+ *      technical_* fields, never blocks the news-only analysis.
  */
 
 const NEWS_API_KEY = process.env.NEWS_API_KEY;
 const NEWS_API_BASE_URL = process.env.NEWS_API_BASE_URL || "https://newsapi.org/v2/everything";
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_RESEARCH_MODEL || "claude-opus-5";
-const SAAF_SIGNAL_API_BASE = process.env.SAAF_SIGNAL_API_BASE;
 
 async function fetchMarketNews({ query, pageSize }) {
   if (!NEWS_API_KEY) {
@@ -72,26 +75,32 @@ async function fetchMarketNews({ query, pageSize }) {
   return response.data?.articles || [];
 }
 
+function reliabilityTierFor(confidence, nSamples) {
+  if (nSamples != null && nSamples < 30) return "Speculative";
+  if (confidence >= 65) return "High conviction";
+  if (confidence >= 55) return "Worth watching";
+  return "Coin flip";
+}
+
 /**
- * Cross-checks one ticker against saaf-signal-backend's own honest
- * confidence engine. Read-only endpoint (GET /signal/{ticker}) — safe to
- * call for every article, never logs a tracked prediction on that side.
- * Returns null (not a throw) on any failure or when unconfigured — this is
- * an optional enrichment, a missing/failed cross-check must never stop the
- * news-only analysis from being saved.
+ * Cross-checks one ticker against the forecast engine's own honest
+ * confidence read — same computation the public GET /signal/:ticker route
+ * (src/routes/signal.js) exposes, called in-process here instead of over
+ * HTTP. Never logs a tracked prediction (that only happens via POST
+ * /predict/:ticker). Returns null (not a throw) on any failure or missing
+ * ticker — this is an optional enrichment, a missing/failed cross-check
+ * must never stop the news-only analysis from being saved.
  */
 async function fetchForecastSignal(ticker) {
-  if (!SAAF_SIGNAL_API_BASE || !ticker) return null;
+  if (!ticker) return null;
   try {
-    const response = await axios.get(`${SAAF_SIGNAL_API_BASE}/signal/${encodeURIComponent(ticker)}`, {
-      timeout: 15000,
-    });
-    const data = response.data;
+    const bars = await fetchHistory(ticker, { days: 730 });
+    const result = generateForecast(bars, ticker);
     return {
-      technicalDirection: data.technical_direction ?? null,
-      technicalConfidence: data.technical_confidence ?? null,
-      technicalSampleSize: data.n_samples ?? null,
-      technicalReliabilityTier: data.reliability_tier ?? null,
+      technicalDirection: result.technicalDirection ?? null,
+      technicalConfidence: result.technicalConfidence ?? null,
+      technicalSampleSize: result.nSamples ?? null,
+      technicalReliabilityTier: reliabilityTierFor(result.technicalConfidence, result.nSamples),
     };
   } catch (err) {
     console.error(`Forecast cross-check failed for ticker "${ticker}":`, err.message);
